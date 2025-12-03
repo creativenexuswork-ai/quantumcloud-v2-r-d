@@ -241,6 +241,86 @@
     box-shadow: 0 0 30px -5px hsl(217 91% 60% / 0.6);
   }
 
+  /* Control Bar Buttons */
+  .control-btn {
+    @apply inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg text-xs font-semibold uppercase tracking-wider transition-all duration-200;
+    @apply disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+
+  .control-btn-primary {
+    @apply bg-primary/20 text-primary border border-primary/30;
+  }
+
+  .control-btn-primary:hover:not(:disabled) {
+    @apply bg-primary/30 border-primary/50;
+  }
+
+  .control-btn-active {
+    @apply bg-primary text-primary-foreground border-primary;
+    box-shadow: 0 0 20px -5px hsl(217 91% 60% / 0.5);
+  }
+
+  .control-btn-success {
+    background: hsl(142 76% 45% / 0.15);
+    color: hsl(142 76% 55%);
+    border: 1px solid hsl(142 76% 45% / 0.3);
+  }
+
+  .control-btn-success:hover:not(:disabled) {
+    background: hsl(142 76% 45% / 0.25);
+    border-color: hsl(142 76% 45% / 0.5);
+  }
+
+  .control-btn-wide {
+    @apply px-6;
+  }
+
+  .control-btn-outline {
+    @apply bg-transparent text-muted-foreground border border-border/50;
+  }
+
+  .control-btn-outline:hover:not(:disabled) {
+    @apply text-foreground border-border;
+  }
+
+  .control-btn-holding {
+    background: hsl(38 92% 50% / 0.15);
+    color: hsl(38 92% 60%);
+    border-color: hsl(38 92% 50% / 0.3);
+  }
+
+  .control-btn-danger {
+    background: hsl(0 84% 60% / 0.12);
+    color: hsl(0 84% 65%);
+    border: 1px solid hsl(0 84% 60% / 0.25);
+  }
+
+  .control-btn-danger:hover:not(:disabled) {
+    background: hsl(0 84% 60% / 0.2);
+    border-color: hsl(0 84% 60% / 0.4);
+  }
+
+  /* Mode Cards */
+  .mode-card {
+    @apply flex flex-col items-center justify-center p-4 rounded-xl transition-all duration-200;
+    @apply bg-muted/20 border border-border/30;
+  }
+
+  .mode-card:hover:not(:disabled) {
+    @apply border-border/50 bg-muted/30;
+  }
+
+  .mode-card-active {
+    @apply border-primary/40 bg-primary/10;
+    box-shadow: 0 0 24px -8px hsl(217 91% 60% / 0.3);
+  }
+
+  /* AI Engine Strip */
+  .ai-engine-strip {
+    @apply flex items-center justify-between px-4 py-2.5 rounded-xl;
+    @apply bg-muted/20 border border-border/30;
+  }
+
   /* Gradient border effect */
   .gradient-border {
     @apply relative;

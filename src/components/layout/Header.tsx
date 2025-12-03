@@ -34,8 +34,8 @@ export function Header() {
   const getStatusColor = () => {
     switch (status) {
       case 'running': return 'status-running';
-      case 'paused': return 'status-paused';
-      case 'error': return 'status-error';
+      case 'holding': return 'status-paused';
+      case 'stopped': return 'status-idle';
       default: return 'status-idle';
     }
   };
