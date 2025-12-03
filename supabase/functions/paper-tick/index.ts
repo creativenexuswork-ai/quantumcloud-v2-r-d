@@ -92,13 +92,13 @@ function runSniperMode(ctx: EngineContext): ProposedOrder[] {
   
   for (const symbol of ctx.selectedSymbols) {
     const tick = ctx.ticks[symbol];
-    if (!tick || tick.regime !== 'trend') continue;
-    if (tick.volatility && tick.volatility > 0.7) continue;
+    if (!tick) continue;
+    // Sniper now works on trend or range regimes
+    if (tick.regime !== 'trend' && tick.regime !== 'range') continue;
     
     const trend = detectTrend(tick);
-    if (trend === 'neutral') continue;
-    
-    const side: Side = trend === 'up' ? 'long' : 'short';
+    // Allow sniper to trade even in neutral by picking a random direction
+    const side: Side = trend !== 'neutral' ? (trend === 'up' ? 'long' : 'short') : (Math.random() > 0.5 ? 'long' : 'short');
     const slDistance = tick.mid * 0.015;
     const tpDistance = tick.mid * 0.03;
     const size = calculateSize(ctx.equity, riskPct, tick.mid, slDistance);
@@ -109,8 +109,8 @@ function runSniperMode(ctx: EngineContext): ProposedOrder[] {
       sl: side === 'long' ? tick.mid - slDistance : tick.mid + slDistance,
       tp: side === 'long' ? tick.mid + tpDistance : tick.mid - tpDistance,
       mode: 'sniper',
-      reason: `Clear ${trend} trend detected`,
-      confidence: 0.8
+      reason: `Sniper entry on ${tick.regime} regime`,
+      confidence: 0.75
     });
   }
   return orders.slice(0, 2);
@@ -124,22 +124,31 @@ function runBurstMode(ctx: EngineContext): ProposedOrder[] {
   const totalRisk = ctx.burstConfig?.riskPerBurstPercent ?? 2;
   const riskPerTrade = totalRisk / burstSize;
   
+  // Pick the best symbol for burst - accept any regime except low_vol
   let bestSymbol: string | null = null;
   let bestScore = 0;
   
   for (const symbol of ctx.selectedSymbols) {
     const tick = ctx.ticks[symbol];
-    if (!tick || tick.regime === 'low_vol') continue;
-    const score = (tick.volatility ?? 0.5) * (tick.regime === 'trend' ? 1.5 : 1);
+    if (!tick) continue;
+    // Accept all regimes for burst
+    const score = (tick.volatility ?? 0.5) * (tick.regime === 'trend' ? 1.5 : tick.regime === 'high_vol' ? 1.3 : 1);
     if (score > bestScore) { bestScore = score; bestSymbol = symbol; }
   }
   
-  if (!bestSymbol) return [];
+  // Fallback to first symbol if none found
+  if (!bestSymbol && ctx.selectedSymbols.length > 0) {
+    bestSymbol = ctx.selectedSymbols[0];
+  }
+  
+  if (!bestSymbol || !ctx.ticks[bestSymbol]) return [];
   
   const tick = ctx.ticks[bestSymbol];
   const trend = detectTrend(tick);
   const side: Side = trend === 'down' ? 'short' : 'long';
   const batchId = generateBatchId();
+  
+  console.log(`Burst mode: Creating ${burstSize} positions on ${bestSymbol} (${side})`);
   
   for (let i = 0; i < burstSize; i++) {
     const slDistance = tick.mid * 0.005;
@@ -167,12 +176,13 @@ function runTrendMode(ctx: EngineContext): ProposedOrder[] {
   
   for (const symbol of ctx.selectedSymbols) {
     const tick = ctx.ticks[symbol];
-    if (!tick || tick.regime !== 'trend') continue;
+    if (!tick) continue;
+    // Trend mode now works on trend or range (potential trend forming)
+    if (tick.regime !== 'trend' && tick.regime !== 'range') continue;
     
     const trend = detectTrend(tick);
-    if (trend === 'neutral') continue;
-    
-    const side: Side = trend === 'up' ? 'long' : 'short';
+    // Allow trading in neutral by using random direction
+    const side: Side = trend !== 'neutral' ? (trend === 'up' ? 'long' : 'short') : (Math.random() > 0.5 ? 'long' : 'short');
     const slDistance = tick.mid * 0.01;
     const tpDistance = tick.mid * 0.02;
     const size = calculateSize(ctx.equity, riskPct, tick.mid, slDistance);
@@ -181,7 +191,7 @@ function runTrendMode(ctx: EngineContext): ProposedOrder[] {
       symbol, side, size, entryPrice: tick.mid,
       sl: side === 'long' ? tick.mid - slDistance : tick.mid + slDistance,
       tp: side === 'long' ? tick.mid + tpDistance : tick.mid - tpDistance,
-      mode: 'trend', reason: `Following ${trend} trend`, confidence: 0.7
+      mode: 'trend', reason: `Trend entry on ${tick.regime}`, confidence: 0.7
     });
   }
   return orders.slice(0, 3);
