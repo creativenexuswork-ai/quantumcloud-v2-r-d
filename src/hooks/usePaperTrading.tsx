@@ -127,8 +127,9 @@ export function usePaperStats() {
       }>;
     },
     enabled: !!session,
-    refetchInterval: 30000,
+    refetchInterval: 4000, // Poll every 4 seconds to match tick interval
     retry: 2,
+    staleTime: 2000, // Consider data stale after 2 seconds
   });
 }
 

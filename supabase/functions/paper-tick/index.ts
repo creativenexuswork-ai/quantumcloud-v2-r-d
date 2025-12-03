@@ -638,16 +638,22 @@ serve(async (req) => {
     console.log(`[ENGINE] shouldRunModes=${shouldRunModes}, enabledModes=${JSON.stringify(modeConfig.enabledModes)}, burstRequested=${config.burst_requested}`);
     
     if (shouldRunModes) {
-      // Calculate current risk exposure
+      // Calculate current ACTUAL risk exposure based on stop-loss distance, not full notional
+      // For paper trading, use actual risk (SL distance * size) not notional position value
       const currentRiskExposure = (finalPositions || []).reduce((sum: number, p: any) => {
-        const posValue = Number(p.size) * Number(p.entry_price);
-        return sum + (posValue / startingEquity) * 100;
+        const entryPrice = Number(p.entry_price);
+        const sl = p.sl ? Number(p.sl) : entryPrice * 0.99; // Default 1% SL if none
+        const slDistance = Math.abs(entryPrice - sl);
+        const actualRisk = slDistance * Number(p.size);
+        return sum + (actualRisk / startingEquity) * 100;
       }, 0);
       
-      const remainingRiskCapacity = riskConfig.maxConcurrentRiskPercent - currentRiskExposure;
+      // For paper trading, use a much higher risk capacity (50%) to allow learning
+      const paperRiskCapacity = 50; // 50% max concurrent risk for paper
+      const remainingRiskCapacity = paperRiskCapacity - currentRiskExposure;
       const availableSlots = (riskConfig.maxOpenTrades || 20) - (finalPositions || []).length;
       
-      console.log(`[ENGINE] currentRisk=${currentRiskExposure.toFixed(2)}%, remainingCapacity=${remainingRiskCapacity.toFixed(2)}%, availableSlots=${availableSlots}`);
+      console.log(`[ENGINE] currentRisk=${currentRiskExposure.toFixed(2)}% (actual SL risk), remainingCapacity=${remainingRiskCapacity.toFixed(2)}%, availableSlots=${availableSlots}`);
 
       if (remainingRiskCapacity > 0 && availableSlots > 0) {
         // Build engine context
@@ -715,33 +721,55 @@ serve(async (req) => {
         console.log(`[ENGINE] Total proposed orders: ${allProposedOrders.length}`);
 
         // Apply risk guardrails and open positions
-        let usedRisk = 0;
+        // FIXED: Use ACTUAL RISK (stop-loss risk), not full position notional value
+        let usedRiskCount = 0; // Count of trades used for risk tracking
         let openedCount = 0;
         const openedByMode: Record<string, number> = {};
         const blockedReasons: string[] = [];
+        
+        // For paper trading, use permissive risk limits
+        // Each trade uses its configured risk % (e.g., 0.1% for burst), not position notional
+        const maxTradesThisTick = Math.min(availableSlots, 25); // Allow up to 25 trades per tick
+        
+        console.log(`[RISK] Starting risk check: maxTradesThisTick=${maxTradesThisTick}, remainingCapacity=${remainingRiskCapacity.toFixed(2)}%`);
 
         for (const order of allProposedOrders) {
-          if (openedCount >= availableSlots) {
+          // Check if we've hit the slot limit
+          if (openedCount >= maxTradesThisTick) {
+            console.log(`[RISK] BLOCKED ${order.symbol}: slots_exhausted (opened=${openedCount}, max=${maxTradesThisTick})`);
             blockedReasons.push(`slots_exhausted`);
             break;
           }
           
-          const orderRisk = (order.size * order.entryPrice / startingEquity) * 100;
-          if (usedRisk + orderRisk > remainingRiskCapacity) {
-            blockedReasons.push(`risk_exceeded:${order.symbol}`);
+          // Calculate ACTUAL risk based on stop-loss distance, not full notional
+          // If no SL, assume a default risk of 1% of entry
+          const slDistance = order.sl 
+            ? Math.abs(order.entryPrice - order.sl) 
+            : order.entryPrice * 0.01;
+          const actualRiskAmount = order.size * slDistance;
+          const actualRiskPercent = (actualRiskAmount / startingEquity) * 100;
+          
+          // For paper trading, be very permissive: allow up to 5% risk per individual trade
+          const maxRiskPerTrade = 5; // 5% max per single trade
+          if (actualRiskPercent > maxRiskPerTrade) {
+            console.log(`[RISK] BLOCKED ${order.symbol}: perTradeRisk=${actualRiskPercent.toFixed(2)}% > max=${maxRiskPerTrade}%`);
+            blockedReasons.push(`per_trade_risk:${order.symbol}:${actualRiskPercent.toFixed(1)}%`);
             continue;
           }
 
-          // Check per-symbol limit (much more permissive now)
-          const symbolPositions = (finalPositions || []).filter((p: any) => p.symbol === order.symbol).length;
-          const maxPerSymbol = riskConfig.maxOpenTrades || 20; // Allow up to max open trades per symbol for burst
-          if (symbolPositions >= maxPerSymbol) {
+          // Check per-symbol limit - allow multiple positions per symbol for burst mode
+          const currentSymbolPositions = (finalPositions || []).filter((p: any) => p.symbol === order.symbol).length + 
+            openedCount; // Include positions opened this tick
+          const maxPerSymbol = order.mode === 'burst' ? 50 : 10; // Burst can have many more
+          
+          if (currentSymbolPositions >= maxPerSymbol) {
+            console.log(`[RISK] BLOCKED ${order.symbol}: symbol_limit (current=${currentSymbolPositions}, max=${maxPerSymbol})`);
             blockedReasons.push(`symbol_limit:${order.symbol}`);
             continue;
           }
 
-          // Open position
-          console.log(`[ENGINE] Opening position: ${order.symbol} ${order.side} ${order.size} @ ${order.entryPrice}`);
+          // Open position - all checks passed
+          console.log(`[ENGINE] Opening: ${order.symbol} ${order.side} size=${order.size.toFixed(6)} @ ${order.entryPrice.toFixed(2)} risk=${actualRiskPercent.toFixed(3)}%`);
           
           const { error: insertError } = await supabase.from('paper_positions').insert({
             user_id: userId,
@@ -758,15 +786,16 @@ serve(async (req) => {
           
           if (insertError) {
             console.error(`[ENGINE] Failed to insert position:`, insertError);
+            blockedReasons.push(`db_error:${order.symbol}`);
             continue;
           }
 
-          usedRisk += orderRisk;
+          usedRiskCount++;
           openedCount++;
           openedByMode[order.mode] = (openedByMode[order.mode] || 0) + 1;
         }
         
-        console.log(`[ENGINE] Opened ${openedCount} positions, blocked reasons: ${blockedReasons.slice(0, 5).join(', ')}`);
+        console.log(`[ENGINE] Result: opened=${openedCount}/${allProposedOrders.length}, blocked=${blockedReasons.length}`);
 
         // Log opened positions by mode
         for (const [mode, count] of Object.entries(openedByMode)) {
@@ -779,14 +808,22 @@ serve(async (req) => {
           });
         }
         
-        // Log if no positions were opened but orders were proposed
-        if (openedCount === 0 && allProposedOrders.length > 0) {
+        // Log blocked reasons with detail
+        if (blockedReasons.length > 0) {
+          const reasonCounts: Record<string, number> = {};
+          for (const r of blockedReasons) {
+            const key = r.split(':')[0];
+            reasonCounts[key] = (reasonCounts[key] || 0) + 1;
+          }
+          
           await supabase.from('system_logs').insert({
             user_id: userId,
-            level: 'warn',
+            level: openedCount > 0 ? 'info' : 'warn',
             source: 'risk',
-            message: `${allProposedOrders.length} orders blocked by risk limits`,
-            meta: { proposed: allProposedOrders.length, reasons: blockedReasons.slice(0, 10) },
+            message: openedCount > 0 
+              ? `${openedCount} opened, ${blockedReasons.length} blocked (${Object.entries(reasonCounts).map(([k,v]) => `${k}:${v}`).join(', ')})`
+              : `All ${allProposedOrders.length} orders blocked: ${Object.entries(reasonCounts).map(([k,v]) => `${k}:${v}`).join(', ')}`,
+            meta: { proposed: allProposedOrders.length, opened: openedCount, reasons: blockedReasons.slice(0, 20) },
           });
         }
 

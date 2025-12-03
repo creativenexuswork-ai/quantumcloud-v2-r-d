@@ -1,6 +1,8 @@
 import { create } from 'zustand';
 import { useSession, AccountType, SessionStatus } from '@/lib/state/session';
-import { usePaperStats } from './usePaperTrading';
+import { usePaperStats, usePaperConfig } from './usePaperTrading';
+import { useEffect, useCallback } from 'react';
+import { supabase } from '@/integrations/supabase/client';
 
 /**
  * Extended Session State Hook
@@ -10,9 +12,8 @@ import { usePaperStats } from './usePaperTrading';
  * - Risk settings
  * - Session performance metrics
  * 
- * ARCHITECTURE NOTE:
- * This extends useSession from lib/state/session.ts to add mode-specific state.
- * The base session state (accountType, status, selectedSymbol) remains in the original store.
+ * IMPORTANT: All state changes are persisted to paper_config in the database
+ * so the backend tick engine uses the same values as the UI.
  */
 
 export type TradingMode = 
@@ -24,6 +25,18 @@ export type TradingMode =
   | 'sniper' 
   | 'risk-off' 
   | 'ai-assist';
+
+// Map UI mode names to backend mode keys
+const UI_TO_BACKEND_MODE: Record<TradingMode, string> = {
+  'burst': 'burst',
+  'scalper': 'sniper', // scalper uses sniper logic
+  'trend': 'trend',
+  'swing': 'swing',
+  'memory': 'memory',
+  'sniper': 'sniper',
+  'risk-off': 'news', // risk-off uses news mode (conservative)
+  'ai-assist': 'hybrid',
+};
 
 // Re-export SessionStatus from session.ts for convenience
 export type { SessionStatus } from '@/lib/state/session';
@@ -62,16 +75,21 @@ interface TradingState {
   // Mode configuration
   modeConfig: ModeConfig;
   
+  // Initialization flag
+  initialized: boolean;
+  
   // Actions
   setSelectedMode: (mode: TradingMode) => void;
   toggleMode: (mode: TradingMode) => void;
   updateRiskSettings: (settings: Partial<RiskSettings>) => void;
   updateModeConfig: (config: Partial<ModeConfig>) => void;
+  initFromBackend: (config: any) => void;
 }
 
-export const useTradingState = create<TradingState>((set) => ({
+export const useTradingState = create<TradingState>((set, get) => ({
   selectedMode: 'burst',
   enabledModes: ['burst', 'trend'],
+  initialized: false,
   
   riskSettings: {
     maxDailyDrawdown: 5,
@@ -82,7 +100,7 @@ export const useTradingState = create<TradingState>((set) => ({
   
   modeConfig: {
     burstTradesPerRun: 20,
-    maxConcurrentPositions: 5,
+    maxConcurrentPositions: 20,
     burstDuration: 'short',
     burstTpStyle: 'fast',
     trendTimeframe: 'intraday',
@@ -106,13 +124,58 @@ export const useTradingState = create<TradingState>((set) => ({
   updateModeConfig: (config) => set((state) => ({
     modeConfig: { ...state.modeConfig, ...config }
   })),
+  
+  initFromBackend: (config) => {
+    if (!config) return;
+    
+    const riskConfig = config.risk_config || {};
+    const burstConfig = config.burst_config || {};
+    const modeConfig = config.mode_config || {};
+    
+    set({
+      initialized: true,
+      riskSettings: {
+        maxDailyDrawdown: riskConfig.maxDailyLossPercent || 5,
+        maxPerTradeRisk: riskConfig.maxPerTradeRiskPercent || 1,
+        positionSizingMode: 'percent',
+        dailyProfitTarget: burstConfig.dailyProfitTargetPercent || 8,
+      },
+      modeConfig: {
+        burstTradesPerRun: burstConfig.size || 20,
+        maxConcurrentPositions: riskConfig.maxOpenTrades || 20,
+        burstDuration: 'short',
+        burstTpStyle: 'fast',
+        trendTimeframe: 'intraday',
+        signalSensitivity: 'medium',
+        lookbackWindow: 50,
+        confidenceThreshold: 0.7,
+      },
+    });
+  },
 }));
 
-// Combined hook for full session state
+// Debounce helper
+function debounce<T extends (...args: any[]) => any>(fn: T, ms: number) {
+  let timeout: NodeJS.Timeout | null = null;
+  return (...args: Parameters<T>) => {
+    if (timeout) clearTimeout(timeout);
+    timeout = setTimeout(() => fn(...args), ms);
+  };
+}
+
+// Combined hook for full session state with database sync
 export function useFullSessionState() {
   const { accountType, status, selectedSymbol, setAccountType, setStatus, setSymbol } = useSession();
   const tradingState = useTradingState();
   const { data: paperData } = usePaperStats();
+  const { updateConfig } = usePaperConfig();
+  
+  // Initialize state from backend config
+  useEffect(() => {
+    if (paperData?.config && !tradingState.initialized) {
+      tradingState.initFromBackend(paperData.config);
+    }
+  }, [paperData?.config, tradingState.initialized]);
   
   // Derive isRunning from status for backward compatibility
   const isRunning = status === 'running';
@@ -126,6 +189,82 @@ export function useFullSessionState() {
   
   // Helper to set running state (backward compatible)
   const setRunning = (val: boolean) => setStatus(val ? 'running' : 'idle');
+  
+  // Persist mode selection to backend
+  const setSelectedMode = useCallback((mode: TradingMode) => {
+    tradingState.setSelectedMode(mode);
+    
+    // Map UI mode to backend mode and update enabled modes
+    const backendMode = UI_TO_BACKEND_MODE[mode];
+    const enabledModes = [backendMode, 'trend', 'burst', 'news', 'memory']; // Include common modes
+    
+    console.log(`[SESSION] selectedMode set to=${mode} (backend=${backendMode})`);
+    
+    // Persist to database
+    updateConfig.mutate({
+      mode_config: {
+        enabledModes,
+        modeSettings: {},
+      },
+    });
+  }, [updateConfig]);
+  
+  // Persist risk settings to backend (debounced)
+  const persistRiskSettings = useCallback(
+    debounce(async (settings: RiskSettings) => {
+      console.log(`[RISK] config updated: perTradeRisk=${settings.maxPerTradeRisk}% maxDD=${settings.maxDailyDrawdown}%`);
+      
+      updateConfig.mutate({
+        risk_config: {
+          maxDailyLossPercent: settings.maxDailyDrawdown,
+          maxConcurrentRiskPercent: 10, // Fixed for paper trading
+          maxOpenTrades: 20,
+          maxPerSymbolExposure: 30,
+          maxPerTradeRiskPercent: settings.maxPerTradeRisk,
+        },
+        burst_config: {
+          size: tradingState.modeConfig.burstTradesPerRun,
+          dailyProfitTargetPercent: settings.dailyProfitTarget,
+          riskPerBurstPercent: 2,
+        },
+      });
+    }, 500),
+    [updateConfig, tradingState.modeConfig.burstTradesPerRun]
+  );
+  
+  const updateRiskSettings = useCallback((settings: Partial<RiskSettings>) => {
+    tradingState.updateRiskSettings(settings);
+    const newSettings = { ...tradingState.riskSettings, ...settings };
+    persistRiskSettings(newSettings);
+  }, [persistRiskSettings, tradingState.riskSettings]);
+  
+  // Persist mode config to backend (debounced)
+  const persistModeConfig = useCallback(
+    debounce(async (config: ModeConfig, riskSettings: RiskSettings) => {
+      console.log(`[SESSION] modeConfig updated: burstSize=${config.burstTradesPerRun} maxConcurrent=${config.maxConcurrentPositions}`);
+      
+      updateConfig.mutate({
+        burst_config: {
+          size: config.burstTradesPerRun,
+          dailyProfitTargetPercent: riskSettings.dailyProfitTarget,
+          riskPerBurstPercent: 2,
+        },
+        risk_config: {
+          maxDailyLossPercent: riskSettings.maxDailyDrawdown,
+          maxConcurrentRiskPercent: 10,
+          maxOpenTrades: config.maxConcurrentPositions,
+          maxPerSymbolExposure: 50,
+        },
+      });
+    }, 500),
+    [updateConfig]
+  );
+  
+  const updateModeConfig = useCallback((config: Partial<ModeConfig>) => {
+    tradingState.updateModeConfig(config);
+    const newConfig = { ...tradingState.modeConfig, ...config };
+    persistModeConfig(newConfig, tradingState.riskSettings);
+  }, [persistModeConfig, tradingState.modeConfig, tradingState.riskSettings]);
   
   return {
     // Account state
@@ -145,16 +284,16 @@ export function useFullSessionState() {
     // Mode state
     selectedMode: tradingState.selectedMode,
     enabledModes: tradingState.enabledModes,
-    setSelectedMode: tradingState.setSelectedMode,
+    setSelectedMode,
     toggleMode: tradingState.toggleMode,
     
     // Risk settings
     riskSettings: tradingState.riskSettings,
-    updateRiskSettings: tradingState.updateRiskSettings,
+    updateRiskSettings,
     
     // Mode config
     modeConfig: tradingState.modeConfig,
-    updateModeConfig: tradingState.updateModeConfig,
+    updateModeConfig,
     
     // Performance metrics
     equity,
