@@ -92,7 +92,10 @@ export function usePaperStats() {
         },
       });
 
-      if (!response.ok) throw new Error('Failed to fetch stats');
+      if (!response.ok) {
+        console.error('Paper stats fetch failed:', response.status, response.statusText);
+        throw new Error('Failed to fetch stats');
+      }
       return response.json() as Promise<{
         stats: PaperStats;
         positions: PaperPosition[];
@@ -123,6 +126,7 @@ export function usePaperStats() {
     },
     enabled: !!session,
     refetchInterval: 30000,
+    retry: 2,
   });
 }
 
@@ -163,15 +167,32 @@ export function useTradingSession() {
   const [positions, setPositions] = useState<PaperPosition[]>([]);
   const [halted, setHalted] = useState(false);
   const [tickInFlight, setTickInFlight] = useState(false);
+  
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
+  const isActiveRef = useRef(false);
+  const tickInFlightRef = useRef(false);
   const queryClient = useQueryClient();
 
-  const runTick = useCallback(async () => {
-    if (!session || tickInFlight) return;
+  // Keep refs in sync with state
+  useEffect(() => {
+    isActiveRef.current = isActive;
+  }, [isActive]);
+
+  useEffect(() => {
+    tickInFlightRef.current = tickInFlight;
+  }, [tickInFlight]);
+
+  const runTickInternal = useCallback(async (): Promise<{ halted: boolean } | null> => {
+    if (tickInFlightRef.current) return null;
+    
+    tickInFlightRef.current = true;
     setTickInFlight(true);
+    
     try {
       const { data: { session: currentSession } } = await supabase.auth.getSession();
-      if (!currentSession?.access_token) return;
+      if (!currentSession?.access_token) {
+        return null;
+      }
 
       const response = await fetch(`${SUPABASE_URL}/functions/v1/paper-tick`, {
         method: 'POST',
@@ -182,70 +203,116 @@ export function useTradingSession() {
         body: JSON.stringify({}),
       });
 
-      if (!response.ok) return;
+      if (!response.ok) {
+        console.error('Tick failed:', response.status);
+        return null;
+      }
+      
       const data = await response.json();
       setStats(data.stats);
       setPositions(data.positions || []);
       setHalted(data.halted || false);
       queryClient.invalidateQueries({ queryKey: ['paper-stats'] });
 
-      if (data.halted) {
-        toast({
-          title: 'Trading Halted',
-          description: 'Daily loss limit reached.',
-          variant: 'destructive',
-        });
-        stopSessionInternal();
-      }
+      return { halted: data.halted || false };
     } catch (error) {
       console.error('Tick error:', error);
+      return null;
     } finally {
+      tickInFlightRef.current = false;
       setTickInFlight(false);
     }
-  }, [session, tickInFlight, queryClient]);
+  }, [queryClient]);
 
-  const stopSessionInternal = useCallback(() => {
+  const stopSessionInternal = useCallback(async () => {
     if (intervalRef.current) {
       clearInterval(intervalRef.current);
       intervalRef.current = null;
     }
     setIsActive(false);
+    isActiveRef.current = false;
+    
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (user) {
+        await supabase.from('paper_config').update({ is_running: false } as any).eq('user_id', user.id);
+      }
+    } catch (e) {
+      console.error('Failed to update is_running:', e);
+    }
   }, []);
 
   const startSession = useCallback(async () => {
     if (halted || isActive) return;
+    
     try {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
 
+      // Update config to mark session as running
       await supabase.from('paper_config').update({ 
         is_running: true, 
         session_started_at: new Date().toISOString() 
       } as any).eq('user_id', user.id);
 
+      // Log session start
       await supabase.from('system_logs').insert({
-        user_id: user.id, level: 'info', source: 'execution',
+        user_id: user.id, 
+        level: 'info', 
+        source: 'execution',
         message: 'Trading session started',
       });
 
       setIsActive(true);
-      runTick();
-      intervalRef.current = setInterval(runTick, TICK_INTERVAL_MS);
+      isActiveRef.current = true;
+      
+      // Run first tick immediately
+      const result = await runTickInternal();
+      
+      // If halted on first tick, don't start the interval
+      if (result?.halted) {
+        toast({
+          title: 'Trading Halted',
+          description: 'Daily loss limit reached.',
+          variant: 'destructive',
+        });
+        await stopSessionInternal();
+        return;
+      }
+      
+      // Start interval for subsequent ticks
+      intervalRef.current = setInterval(async () => {
+        if (!isActiveRef.current) return;
+        
+        const tickResult = await runTickInternal();
+        if (tickResult?.halted) {
+          toast({
+            title: 'Trading Halted',
+            description: 'Daily loss limit reached.',
+            variant: 'destructive',
+          });
+          await stopSessionInternal();
+        }
+      }, TICK_INTERVAL_MS);
+      
       toast({ title: 'Session Started', description: 'Trading engine running' });
     } catch (error) {
       console.error('Start session error:', error);
+      toast({ title: 'Error', description: 'Failed to start session', variant: 'destructive' });
     }
-  }, [halted, isActive, runTick]);
+  }, [halted, isActive, runTickInternal, stopSessionInternal]);
 
   const stopSession = useCallback(async () => {
-    stopSessionInternal();
+    await stopSessionInternal();
+    
     try {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
 
-      await supabase.from('paper_config').update({ is_running: false } as any).eq('user_id', user.id);
       await supabase.from('system_logs').insert({
-        user_id: user.id, level: 'info', source: 'execution',
+        user_id: user.id, 
+        level: 'info', 
+        source: 'execution',
         message: 'Trading session stopped',
       });
       queryClient.invalidateQueries({ queryKey: ['paper-stats'] });
@@ -256,76 +323,162 @@ export function useTradingSession() {
   }, [stopSessionInternal, queryClient]);
 
   const triggerBurst = useCallback(async () => {
-    const { data: { session: currentSession } } = await supabase.auth.getSession();
-    if (!currentSession?.access_token) return;
-    await fetch(`${SUPABASE_URL}/functions/v1/paper-tick`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${currentSession.access_token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ burstRequested: true }),
-    });
-    toast({ title: 'Burst Triggered' });
-    queryClient.invalidateQueries({ queryKey: ['paper-stats'] });
+    try {
+      const { data: { session: currentSession } } = await supabase.auth.getSession();
+      if (!currentSession?.access_token) return;
+      
+      const response = await fetch(`${SUPABASE_URL}/functions/v1/paper-tick`, {
+        method: 'POST',
+        headers: { 
+          Authorization: `Bearer ${currentSession.access_token}`, 
+          'Content-Type': 'application/json' 
+        },
+        body: JSON.stringify({ burstRequested: true }),
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        setStats(data.stats);
+        setPositions(data.positions || []);
+      }
+      
+      toast({ title: 'Burst Triggered' });
+      queryClient.invalidateQueries({ queryKey: ['paper-stats'] });
+    } catch (error) {
+      console.error('Burst trigger error:', error);
+      toast({ title: 'Error', description: 'Failed to trigger burst', variant: 'destructive' });
+    }
   }, [queryClient]);
 
   const takeBurstProfit = useCallback(async () => {
-    const { data: { session: currentSession } } = await supabase.auth.getSession();
-    if (!currentSession?.access_token) return;
-    await fetch(`${SUPABASE_URL}/functions/v1/paper-tick`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${currentSession.access_token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ takeBurstProfit: true }),
-    });
-    toast({ title: 'Burst Profit Taken' });
-    queryClient.invalidateQueries({ queryKey: ['paper-stats'] });
+    try {
+      const { data: { session: currentSession } } = await supabase.auth.getSession();
+      if (!currentSession?.access_token) return;
+      
+      const response = await fetch(`${SUPABASE_URL}/functions/v1/paper-tick`, {
+        method: 'POST',
+        headers: { 
+          Authorization: `Bearer ${currentSession.access_token}`, 
+          'Content-Type': 'application/json' 
+        },
+        body: JSON.stringify({ takeBurstProfit: true }),
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        setStats(data.stats);
+        setPositions(data.positions || []);
+      }
+      
+      toast({ title: 'Burst Profit Taken' });
+      queryClient.invalidateQueries({ queryKey: ['paper-stats'] });
+    } catch (error) {
+      console.error('Take burst profit error:', error);
+      toast({ title: 'Error', description: 'Failed to take burst profit', variant: 'destructive' });
+    }
   }, [queryClient]);
 
   const globalClose = useCallback(async () => {
-    const { data: { session: currentSession } } = await supabase.auth.getSession();
-    if (!currentSession?.access_token) return;
-    const response = await fetch(`${SUPABASE_URL}/functions/v1/paper-tick`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${currentSession.access_token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ globalClose: true }),
-    });
-    if (response.ok) {
-      const data = await response.json();
-      setStats(data.stats);
-      setPositions([]);
+    try {
+      const { data: { session: currentSession } } = await supabase.auth.getSession();
+      if (!currentSession?.access_token) return;
+      
+      const response = await fetch(`${SUPABASE_URL}/functions/v1/paper-tick`, {
+        method: 'POST',
+        headers: { 
+          Authorization: `Bearer ${currentSession.access_token}`, 
+          'Content-Type': 'application/json' 
+        },
+        body: JSON.stringify({ globalClose: true }),
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        setStats(data.stats);
+        setPositions([]);
+      }
+      
+      toast({ title: 'Global Close', description: 'All positions closed' });
+      queryClient.invalidateQueries({ queryKey: ['paper-stats'] });
+    } catch (error) {
+      console.error('Global close error:', error);
+      toast({ title: 'Error', description: 'Failed to close positions', variant: 'destructive' });
     }
-    toast({ title: 'Global Close', description: 'All positions closed' });
-    queryClient.invalidateQueries({ queryKey: ['paper-stats'] });
   }, [queryClient]);
 
+  // Check session state on mount and restore if needed
   useEffect(() => {
+    let mounted = true;
+    
     async function checkSessionState() {
       if (!session) return;
-      const { data: config } = await supabase
-        .from('paper_config')
-        .select('is_running, trading_halted_for_day')
-        .eq('user_id', session.user.id)
-        .maybeSingle();
+      
+      try {
+        const { data: config } = await supabase
+          .from('paper_config')
+          .select('is_running, trading_halted_for_day')
+          .eq('user_id', session.user.id)
+          .maybeSingle();
 
-      if (config) {
-        setHalted(config.trading_halted_for_day || false);
-        if ((config as any).is_running && !config.trading_halted_for_day) {
-          setIsActive(true);
-          runTick();
-          intervalRef.current = setInterval(runTick, TICK_INTERVAL_MS);
+        if (!mounted) return;
+
+        if (config) {
+          setHalted(config.trading_halted_for_day || false);
+          
+          // Resume session if it was running
+          if ((config as any).is_running && !config.trading_halted_for_day) {
+            setIsActive(true);
+            isActiveRef.current = true;
+            
+            // Run first tick
+            const result = await runTickInternal();
+            
+            if (!mounted) return;
+            
+            if (result?.halted) {
+              await stopSessionInternal();
+              return;
+            }
+            
+            // Start interval
+            intervalRef.current = setInterval(async () => {
+              if (!isActiveRef.current) return;
+              
+              const tickResult = await runTickInternal();
+              if (tickResult?.halted) {
+                await stopSessionInternal();
+              }
+            }, TICK_INTERVAL_MS);
+          }
         }
+      } catch (error) {
+        console.error('Check session state error:', error);
       }
     }
+    
     checkSessionState();
-  }, [session]);
-
-  useEffect(() => {
+    
+    // Cleanup on unmount
     return () => {
-      if (intervalRef.current) clearInterval(intervalRef.current);
+      mounted = false;
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+        intervalRef.current = null;
+      }
     };
-  }, []);
+  }, [session?.user?.id]); // Only depend on user ID
 
   return {
-    isActive, stats, positions, halted, tickInFlight,
-    startSession, stopSession, triggerBurst, takeBurstProfit, globalClose,
+    isActive, 
+    stats, 
+    positions, 
+    halted, 
+    tickInFlight,
+    startSession, 
+    stopSession, 
+    triggerBurst, 
+    takeBurstProfit, 
+    globalClose,
   };
 }
 
@@ -354,6 +507,10 @@ export function usePaperConfig() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['paper-stats'] });
       toast({ title: 'Config Updated', description: 'Settings saved' });
+    },
+    onError: (error) => {
+      console.error('Config update error:', error);
+      toast({ title: 'Error', description: 'Failed to save settings', variant: 'destructive' });
     },
   });
 
