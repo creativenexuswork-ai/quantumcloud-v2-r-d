@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { Header } from '@/components/layout/Header';
 import { MarketViewPanel } from '@/components/dashboard/MarketViewPanel';
-import { ModesControlPanel } from '@/components/dashboard/ModesControlPanel';
+import { CockpitPanel } from '@/components/dashboard/CockpitPanel';
+import { ModeSettingsPanel } from '@/components/dashboard/ModeSettingsPanel';
 import { PerformancePanel } from '@/components/dashboard/PerformancePanel';
 import { ActivityLogPanel } from '@/components/dashboard/ActivityLogPanel';
 import { WatchlistPanel } from '@/components/dashboard/WatchlistPanel';
@@ -15,16 +16,15 @@ export default function Dashboard() {
   const { accountType } = useSession();
   const [activeView, setActiveView] = useState<ViewTab>('trading');
 
-  // Auto-switch to live setup when live mode selected
   const showLiveSetup = accountType === 'live' || activeView === 'live-setup';
 
   return (
     <div className="min-h-screen bg-gradient-terminal">
       <Header />
       
-      <main className="container mx-auto px-4 py-6">
+      <main className="container mx-auto px-3 py-3">
         {/* View Tabs (for mobile/tablet) */}
-        <div className="md:hidden mb-4 flex gap-2">
+        <div className="md:hidden mb-3 flex gap-2">
           <button
             onClick={() => setActiveView('trading')}
             className={cn(
@@ -50,10 +50,8 @@ export default function Dashboard() {
         </div>
 
         {showLiveSetup ? (
-          /* Live Trading Setup View */
           <div className="max-w-2xl mx-auto animate-fade-in">
             <LiveTradingPanel />
-            
             <button
               onClick={() => setActiveView('trading')}
               className="mt-4 w-full py-3 text-sm text-muted-foreground hover:text-foreground transition-colors"
@@ -62,34 +60,28 @@ export default function Dashboard() {
             </button>
           </div>
         ) : (
-          /* Main Trading Console */
-          <div className="space-y-6 animate-fade-in">
-            {/* Main Grid - Chart & Controls */}
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-              {/* Left - Market View (7 cols) */}
+          <div className="space-y-3 animate-fade-in">
+            {/* Cockpit - Always visible without scroll on mobile */}
+            <CockpitPanel />
+
+            {/* Main Grid - Chart & Settings */}
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-3">
               <div className="lg:col-span-7">
                 <MarketViewPanel />
               </div>
-              
-              {/* Right - Modes & Controls (5 cols) */}
               <div className="lg:col-span-5">
-                <ModesControlPanel />
+                <ModeSettingsPanel />
               </div>
             </div>
 
-            {/* Lower Panels - Performance, Logs, Watchlist */}
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-              {/* Performance (5 cols) */}
+            {/* Lower Panels */}
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-3">
               <div className="lg:col-span-5">
                 <PerformancePanel />
               </div>
-              
-              {/* Activity Log (4 cols) */}
               <div className="lg:col-span-4">
                 <ActivityLogPanel />
               </div>
-              
-              {/* Watchlist (3 cols) */}
               <div className="lg:col-span-3">
                 <WatchlistPanel />
               </div>
