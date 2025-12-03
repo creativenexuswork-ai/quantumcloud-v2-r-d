@@ -484,6 +484,19 @@
     @apply bg-muted/20 border border-border/30;
   }
 
+  /* AI Strip Compact */
+  .ai-strip-compact {
+    @apply flex items-center justify-between gap-2 text-xs;
+    line-height: 1.2;
+    letter-spacing: 0.01em;
+    padding-top: 2px;
+    padding-bottom: 2px;
+  }
+
+  .ai-strip-sep {
+    @apply text-slate-600;
+  }
+
   /* Gradient border effect */
   .gradient-border {
     @apply relative;
