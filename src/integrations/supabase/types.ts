@@ -213,6 +213,7 @@ export type Database = {
           mode_config: Json | null
           risk_config: Json | null
           session_started_at: string | null
+          session_status: string | null
           show_advanced_explanations: boolean | null
           trading_halted_for_day: boolean | null
           updated_at: string | null
@@ -228,6 +229,7 @@ export type Database = {
           mode_config?: Json | null
           risk_config?: Json | null
           session_started_at?: string | null
+          session_status?: string | null
           show_advanced_explanations?: boolean | null
           trading_halted_for_day?: boolean | null
           updated_at?: string | null
@@ -243,6 +245,7 @@ export type Database = {
           mode_config?: Json | null
           risk_config?: Json | null
           session_started_at?: string | null
+          session_status?: string | null
           show_advanced_explanations?: boolean | null
           trading_halted_for_day?: boolean | null
           updated_at?: string | null
