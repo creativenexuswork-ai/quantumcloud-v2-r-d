@@ -2,73 +2,16 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Zap, Power, DollarSign, X } from 'lucide-react';
-import { useActiveAccount } from '@/hooks/useAccounts';
-import { useTodayBurstStats, useCreateBurstBatch, useCloseBurstBatch } from '@/hooks/useBurstBatches';
-import { useUserSettings } from '@/hooks/useUserSettings';
-import { toast } from '@/hooks/use-toast';
+import { useTradingSession, usePaperStats } from '@/hooks/usePaperTrading';
 
 export function BurstControlCard() {
-  const { data: activeAccount } = useActiveAccount();
-  const { data: burstStats } = useTodayBurstStats(activeAccount?.id);
-  const { data: settings } = useUserSettings();
-  const createBurst = useCreateBurstBatch();
-  const closeBurst = useCloseBurstBatch();
-
-  const dailyTarget = settings?.burst_daily_target_pct || 8;
-  const isLocked = (burstStats?.totalPnl || 0) >= dailyTarget;
-
-  const handleStartBurst = async () => {
-    if (!activeAccount) return;
-    
-    try {
-      await createBurst.mutateAsync({
-        account_id: activeAccount.id,
-        symbol: 'BTCUSDT',
-        status: 'active',
-        burst_size: settings?.burst_size || 20,
-        total_risk_pct: 2,
-      });
-      toast({
-        title: 'Burst Started',
-        description: 'Single burst batch initiated.',
-      });
-    } catch (error) {
-      toast({
-        title: 'Error',
-        description: 'Failed to start burst.',
-        variant: 'destructive',
-      });
-    }
-  };
-
-  const handleTakeBurstProfit = async () => {
-    if (!burstStats?.activeBurst) return;
-
-    try {
-      await closeBurst.mutateAsync({
-        batchId: burstStats.activeBurst.id,
-        resultPct: 0.5, // Would be calculated from actual trades
-        reasonClosed: 'manual_take_burst_profit',
-      });
-      toast({
-        title: 'Burst Closed',
-        description: 'Burst profit taken successfully.',
-      });
-    } catch (error) {
-      toast({
-        title: 'Error',
-        description: 'Failed to close burst.',
-        variant: 'destructive',
-      });
-    }
-  };
-
-  const handleGlobalClose = () => {
-    toast({
-      title: 'Global Close',
-      description: 'All positions would be closed. (Simulation)',
-    });
-  };
+  const { triggerBurst, takeBurstProfit, globalClose } = useTradingSession();
+  const { data: paperData } = usePaperStats();
+  
+  const stats = paperData?.stats;
+  const burstStatus = stats?.burstStatus || 'idle';
+  const isLocked = burstStatus === 'locked';
+  const isRunning = burstStatus === 'running';
 
   return (
     <Card className="glass-card">
@@ -80,7 +23,7 @@ export function BurstControlCard() {
           </CardTitle>
           {isLocked && (
             <Badge className="bg-success/20 text-success">
-              +{dailyTarget}% Reached
+              Target Reached
             </Badge>
           )}
         </div>
@@ -90,30 +33,30 @@ export function BurstControlCard() {
           <div className="text-center">
             <p className="metric-label">Today P&L</p>
             <p className={`metric-value text-lg ${
-              (burstStats?.totalPnl || 0) >= 0 ? 'profit-text' : 'loss-text'
+              (stats?.burstPnlToday || 0) >= 0 ? 'profit-text' : 'loss-text'
             }`}>
-              {(burstStats?.totalPnl || 0) >= 0 ? '+' : ''}{(burstStats?.totalPnl || 0).toFixed(2)}%
+              {(stats?.burstPnlToday || 0) >= 0 ? '+' : ''}{(stats?.burstPnlToday || 0).toFixed(2)}%
             </p>
           </div>
           <div className="text-center">
             <p className="metric-label">Bursts Today</p>
-            <p className="metric-value text-lg">{burstStats?.burstsToday || 0}</p>
+            <p className="metric-value text-lg">{stats?.burstsToday || 0}</p>
           </div>
           <div className="text-center">
             <p className="metric-label">Status</p>
             <p className={`text-sm font-medium ${
-              burstStats?.hasActiveBurst ? 'text-success' :
+              isRunning ? 'text-success' :
               isLocked ? 'text-warning' : 'text-muted-foreground'
             }`}>
-              {burstStats?.hasActiveBurst ? 'Running' : isLocked ? 'Locked' : 'Idle'}
+              {isRunning ? 'Running' : isLocked ? 'Locked' : 'Idle'}
             </p>
           </div>
         </div>
 
         <div className="grid grid-cols-2 gap-2">
           <Button
-            onClick={handleStartBurst}
-            disabled={isLocked || burstStats?.hasActiveBurst}
+            onClick={triggerBurst}
+            disabled={isLocked || isRunning}
             className="gap-2"
             size="sm"
           >
@@ -121,8 +64,8 @@ export function BurstControlCard() {
             Start Burst
           </Button>
           <Button
-            onClick={handleStartBurst}
-            disabled={isLocked || burstStats?.hasActiveBurst}
+            onClick={triggerBurst}
+            disabled={isLocked || isRunning}
             variant="outline"
             size="sm"
             className="gap-2"
@@ -134,8 +77,8 @@ export function BurstControlCard() {
 
         <div className="grid grid-cols-2 gap-2">
           <Button
-            onClick={handleTakeBurstProfit}
-            disabled={!burstStats?.hasActiveBurst}
+            onClick={takeBurstProfit}
+            disabled={!isRunning}
             variant="secondary"
             size="sm"
             className="gap-2"
@@ -144,7 +87,7 @@ export function BurstControlCard() {
             Take Burst Profit
           </Button>
           <Button
-            onClick={handleGlobalClose}
+            onClick={globalClose}
             variant="destructive"
             size="sm"
             className="gap-2"

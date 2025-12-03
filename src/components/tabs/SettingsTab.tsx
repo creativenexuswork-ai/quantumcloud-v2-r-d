@@ -4,13 +4,13 @@ import { Slider } from '@/components/ui/slider';
 import { Switch } from '@/components/ui/switch';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { useUserSettings, useUpdateUserSettings } from '@/hooks/useUserSettings';
+import { usePaperStats, usePaperConfig } from '@/hooks/usePaperTrading';
 import { useState, useEffect } from 'react';
 import { toast } from '@/hooks/use-toast';
 
 export function SettingsTab() {
-  const { data: settings, isLoading } = useUserSettings();
-  const updateSettings = useUpdateUserSettings();
+  const { data: paperData, isLoading } = usePaperStats();
+  const { updateConfig } = usePaperConfig();
 
   const [formData, setFormData] = useState({
     maxDailyLoss: 5,
@@ -19,33 +19,38 @@ export function SettingsTab() {
     burstDailyTarget: 8,
     useAiReasoning: true,
     showAdvanced: false,
-    useNewsApi: false,
+    brokerApiUrl: '',
   });
 
+  // Initialize from paper_config
   useEffect(() => {
-    if (settings) {
+    if (paperData?.config) {
+      const config = paperData.config;
       setFormData({
-        maxDailyLoss: settings.max_daily_loss_pct || 5,
-        maxConcurrentRisk: settings.max_concurrent_risk_pct || 10,
-        burstSize: settings.burst_size || 20,
-        burstDailyTarget: settings.burst_daily_target_pct || 8,
-        useAiReasoning: settings.use_ai_reasoning ?? true,
-        showAdvanced: settings.show_advanced_explanations ?? false,
-        useNewsApi: settings.use_news_api ?? false,
+        maxDailyLoss: config.risk_config?.maxDailyLossPercent || 5,
+        maxConcurrentRisk: config.risk_config?.maxConcurrentRiskPercent || 10,
+        burstSize: config.burst_config?.size || 20,
+        burstDailyTarget: config.burst_config?.dailyProfitTargetPercent || 8,
+        useAiReasoning: config.use_ai_reasoning ?? true,
+        showAdvanced: config.show_advanced_explanations ?? false,
+        brokerApiUrl: '',
       });
     }
-  }, [settings]);
+  }, [paperData?.config]);
 
   const handleSave = async () => {
     try {
-      await updateSettings.mutateAsync({
-        max_daily_loss_pct: formData.maxDailyLoss,
-        max_concurrent_risk_pct: formData.maxConcurrentRisk,
-        burst_size: formData.burstSize,
-        burst_daily_target_pct: formData.burstDailyTarget,
+      await updateConfig.mutateAsync({
+        risk_config: {
+          maxDailyLossPercent: formData.maxDailyLoss,
+          maxConcurrentRiskPercent: formData.maxConcurrentRisk,
+        },
+        burst_config: {
+          size: formData.burstSize,
+          dailyProfitTargetPercent: formData.burstDailyTarget,
+        },
         use_ai_reasoning: formData.useAiReasoning,
         show_advanced_explanations: formData.showAdvanced,
-        use_news_api: formData.useNewsApi,
       });
       toast({
         title: 'Settings Saved',
@@ -196,23 +201,15 @@ export function SettingsTab() {
         <CardContent className="space-y-6">
           <div className="space-y-2">
             <Label>Broker API Base URL</Label>
-            <Input placeholder="https://api.broker.com/v1" disabled />
-            <p className="text-xs text-muted-foreground">
-              Configure in account settings for live trading
-            </p>
-          </div>
-
-          <div className="flex items-center justify-between">
-            <div>
-              <Label>Use News API</Label>
-              <p className="text-xs text-muted-foreground">
-                Enable external news sentiment analysis
-              </p>
-            </div>
-            <Switch
-              checked={formData.useNewsApi}
-              onCheckedChange={(v) => setFormData(p => ({ ...p, useNewsApi: v }))}
+            <Input 
+              placeholder="https://api.broker.com/v1" 
+              value={formData.brokerApiUrl}
+              onChange={(e) => setFormData(p => ({ ...p, brokerApiUrl: e.target.value }))}
+              disabled
             />
+            <p className="text-xs text-muted-foreground">
+              Configure in account settings for live trading (coming soon)
+            </p>
           </div>
         </CardContent>
       </Card>

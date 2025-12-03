@@ -1,7 +1,7 @@
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
-import { useSystemLogs } from '@/hooks/useSystemLogs';
+import { usePaperStats } from '@/hooks/usePaperTrading';
 
 const levelColors: Record<string, string> = {
   info: 'bg-primary/20 text-primary',
@@ -18,7 +18,8 @@ const sourceColors: Record<string, string> = {
 };
 
 export function LogsTab() {
-  const { data: logs, isLoading } = useSystemLogs();
+  const { data: paperData, isLoading } = usePaperStats();
+  const logs = paperData?.logs || [];
 
   return (
     <Card className="glass-card">
@@ -28,7 +29,7 @@ export function LogsTab() {
       <CardContent>
         {isLoading ? (
           <div className="text-center py-8 text-muted-foreground">Loading logs...</div>
-        ) : logs?.length === 0 ? (
+        ) : logs.length === 0 ? (
           <div className="text-center py-8 text-muted-foreground">No logs yet</div>
         ) : (
           <div className="max-h-[600px] overflow-auto scrollbar-hide">
@@ -42,7 +43,7 @@ export function LogsTab() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {logs?.map((log) => (
+                {logs.map((log) => (
                   <TableRow key={log.id}>
                     <TableCell className="font-mono text-xs text-muted-foreground">
                       {new Date(log.created_at).toLocaleString()}
