@@ -1,4 +1,4 @@
-import { ChevronDown, LogOut, User } from 'lucide-react';
+import { Zap, LogOut, User } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
   DropdownMenu,
@@ -7,131 +7,113 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { useAuth } from '@/hooks/useAuth';
-import { useAccounts, useSetActiveAccount } from '@/hooks/useAccounts';
-import { StatusPill } from '@/components/ui/StatusPill';
-import { useSession } from '@/lib/state/session';
+import { useFullSessionState } from '@/hooks/useSessionState';
+import { toast } from '@/hooks/use-toast';
 
 export function Header() {
   const { user, signOut } = useAuth();
-  const { data: accounts } = useAccounts();
-  const setActiveAccount = useSetActiveAccount();
-  const { accountType, setAccountType, isRunning } = useSession();
-  
-  const activeAccount = accounts?.find(a => a.is_active);
-  const equity = activeAccount?.equity || 0;
+  const { 
+    accountType, 
+    setAccountType, 
+    status, 
+    selectedMode,
+  } = useFullSessionState();
 
-  const handleAccountChange = (accountId: string) => {
-    setActiveAccount.mutate(accountId);
+  const handleLiveClick = () => {
+    if (accountType === 'live') return;
+    toast({
+      title: 'Live Trading Not Connected',
+      description: 'Configure your broker in the Live Trading panel to enable live trading.',
+    });
   };
 
-  const handleAccountTypeChange = (type: 'paper' | 'live') => {
-    setAccountType(type);
+  const handlePaperClick = () => {
+    setAccountType('paper');
   };
 
-  // Derive status from global state
-  const status = isRunning ? 'scanning' : 'idle';
+  const getStatusColor = () => {
+    switch (status) {
+      case 'running': return 'status-running';
+      case 'paused': return 'status-paused';
+      case 'error': return 'status-error';
+      default: return 'status-idle';
+    }
+  };
+
+  const formatModeName = (mode: string) => {
+    return mode.charAt(0).toUpperCase() + mode.slice(1).replace('-', ' ');
+  };
 
   return (
-    <header className="glass-card border-b border-border/30 px-6 py-4">
-      <div className="flex items-center justify-between">
-        {/* Left - Branding */}
-        <div className="flex flex-col">
-          <h1 className="text-xl font-bold text-card-foreground">
-            QuantumCloud <span className="text-primary">V2</span>
-          </h1>
-          <p className="text-xs text-muted-foreground">
-            Personal AI-powered multi-mode trading console
-          </p>
-        </div>
-
-        {/* Center - Account Selector */}
-        <div className="flex items-center gap-4">
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="outline" className="gap-2 bg-card border-border/50">
-                <span className="font-medium">{activeAccount?.name || 'Select Account'}</span>
-                <ChevronDown className="h-4 w-4" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="center" className="w-48">
-              {accounts?.map(account => (
-                <DropdownMenuItem
-                  key={account.id}
-                  onClick={() => handleAccountChange(account.id)}
-                  className="flex items-center justify-between"
-                >
-                  <span>{account.name}</span>
-                  <span className={`text-xs px-2 py-0.5 rounded-full ${
-                    account.type === 'paper' 
-                      ? 'bg-warning/20 text-warning' 
-                      : 'bg-success/20 text-success'
-                  }`}>
-                    {account.type}
-                  </span>
-                </DropdownMenuItem>
-              ))}
-            </DropdownMenuContent>
-          </DropdownMenu>
-
-          <div className="flex gap-2">
-            <Button
-              variant={accountType === 'paper' ? 'default' : 'outline'}
-              size="sm"
-              className="text-xs"
-              onClick={() => handleAccountTypeChange('paper')}
-            >
-              Paper Trading
-            </Button>
-            <Button
-              variant={accountType === 'live' ? 'default' : 'outline'}
-              size="sm"
-              className="text-xs"
-              onClick={() => handleAccountTypeChange('live')}
-            >
-              Live Trading
-            </Button>
-          </div>
-        </div>
-
-        {/* Right - Stats & User */}
-        <div className="flex items-center gap-6">
-          <div className="text-right">
-            <p className="metric-label">Equity</p>
-            <p className="metric-value text-card-foreground">
-              ${equity.toLocaleString('en-US', { minimumFractionDigits: 2 })}
-            </p>
+    <header className="sticky top-0 z-50 border-b border-border/50 bg-background/80 backdrop-blur-xl">
+      <div className="container mx-auto px-4">
+        <div className="flex h-14 items-center justify-between">
+          {/* Left - Brand */}
+          <div className="flex items-center gap-3">
+            <div className="relative">
+              <Zap className="h-6 w-6 text-primary" />
+              <div className="absolute inset-0 blur-lg bg-primary/30" />
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-lg font-bold text-foreground">QuantumCloud</span>
+              <span className="text-lg font-bold text-gradient">V2</span>
+            </div>
           </div>
 
-          <div className="text-right">
-            <p className="metric-label">Today P&L</p>
-            <p className="metric-value profit-text">+0.00%</p>
-          </div>
-
-          {/* Paper Trading indicator pill */}
-          {accountType === 'paper' && (
-            <span className="px-3 py-1 rounded-full text-xs font-medium bg-primary/20 text-primary">
-              Paper Trading
+          {/* Center - Account & Mode Summary */}
+          <div className="hidden md:flex items-center gap-2 text-sm text-muted-foreground">
+            <span>Account:</span>
+            <span className="font-medium text-foreground">
+              {accountType === 'paper' ? 'PAPER' : 'LIVE'}
             </span>
-          )}
+            <span className="text-border">•</span>
+            <span>Mode:</span>
+            <span className="font-medium text-foreground">
+              {formatModeName(selectedMode)}
+            </span>
+          </div>
 
-          <StatusPill status={status} />
+          {/* Right - Account Pills, Status & User */}
+          <div className="flex items-center gap-3">
+            {/* Account Type Pills */}
+            <div className="flex items-center gap-1 p-1 rounded-full bg-muted/30">
+              <button
+                onClick={handlePaperClick}
+                className={accountType === 'paper' ? 'pill-active' : 'pill-inactive'}
+              >
+                Paper
+              </button>
+              <button
+                onClick={handleLiveClick}
+                className={accountType === 'live' ? 'pill-active' : 'pill-inactive'}
+              >
+                Live
+              </button>
+            </div>
 
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="icon" className="rounded-full">
-                <User className="h-5 w-5" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem disabled className="text-xs text-muted-foreground">
-                {user?.email}
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => signOut()} className="text-destructive">
-                <LogOut className="h-4 w-4 mr-2" />
-                Sign Out
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+            {/* Status Pill */}
+            <div className={`status-pill ${getStatusColor()}`}>
+              {status.charAt(0).toUpperCase() + status.slice(1)}
+            </div>
+
+            {/* User Menu */}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="ghost" size="icon" className="rounded-full">
+                  <User className="h-5 w-5" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="bg-card border-border">
+                <DropdownMenuItem disabled className="text-xs text-muted-foreground">
+                  {user?.email}
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => signOut()} className="text-destructive">
+                  <LogOut className="h-4 w-4 mr-2" />
+                  Sign Out
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
         </div>
       </div>
     </header>
