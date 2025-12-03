@@ -1,7 +1,6 @@
 import { Zap, Crosshair, TrendingUp } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { TradingMode } from '@/hooks/useSessionState';
-import { SessionStatus } from '@/lib/state/session';
+import { TradingMode, SessionStatus } from '@/lib/state/sessionMachine';
 import { toast } from '@/hooks/use-toast';
 
 interface ModeSelectorProps {
@@ -32,13 +31,13 @@ const CORE_MODES: { key: TradingMode; label: string; icon: typeof Zap; descripti
 ];
 
 export function ModeSelector({ selectedMode, onSelectMode, status }: ModeSelectorProps) {
-  const isActive = status === 'running' || status === 'holding';
+  const isActive = status === 'running' || status === 'holding' || status === 'arming';
 
   const handleModeChange = (mode: TradingMode) => {
     if (isActive) {
       toast({
         title: 'Mode Locked',
-        description: 'Stop or hold the engine before changing mode.',
+        description: 'Stop the engine before changing mode.',
         variant: 'default',
       });
       return;

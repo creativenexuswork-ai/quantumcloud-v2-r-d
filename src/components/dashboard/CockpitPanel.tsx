@@ -1,8 +1,13 @@
 import { Zap, Crosshair, TrendingUp, Brain, Loader2, Power, DollarSign, Pause, XCircle, Play } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { TradingMode, useFullSessionState } from '@/hooks/useSessionState';
-import { useTradingSession, usePaperStats } from '@/hooks/usePaperTrading';
-import { toast } from '@/hooks/use-toast';
+import { 
+  useSessionMachine, 
+  useSessionButtons, 
+  TradingMode,
+  STATUS_LABELS,
+  STATUS_COLORS 
+} from '@/lib/state/sessionMachine';
+import { useSessionActions } from '@/hooks/useSessionActions';
 
 const MODES: { key: TradingMode; label: string; icon: typeof Zap }[] = [
   { key: 'burst', label: 'BURST', icon: Zap },
@@ -11,81 +16,18 @@ const MODES: { key: TradingMode; label: string; icon: typeof Zap }[] = [
 ];
 
 export function CockpitPanel() {
-  const {
-    selectedMode,
-    setSelectedMode,
-    todayPnl,
-    tradesToday,
-    status,
-  } = useFullSessionState();
-
   const { 
-    startSession, 
-    stopSession, 
-    holdSession, 
-    resumeSession,
-    globalClose, 
-    takeBurstProfit,
-    tickInFlight 
-  } = useTradingSession();
+    status, 
+    mode, 
+    pnlToday, 
+    tradesToday, 
+    openCount, 
+    tickInFlight,
+    lastError,
+  } = useSessionMachine();
   
-  const { data: paperData } = usePaperStats();
-  const openPositionsCount = paperData?.stats?.openPositionsCount || 0;
-
-  // Session state - single source of truth from useSession store
-  const isIdle = status === 'idle';
-  const isRunning = status === 'running';
-  const isHolding = status === 'holding';
-  const isStopped = status === 'stopped';
-  const hasPositions = openPositionsCount > 0;
-
-  // Mode change handler
-  const handleModeChange = (mode: TradingMode) => {
-    if (isRunning || isHolding) {
-      toast({ title: 'Mode Locked', description: 'Stop the engine before changing mode.' });
-      return;
-    }
-    setSelectedMode(mode);
-  };
-
-  // ACTIVATE: Enabled only when idle or stopped
-  const handleActivate = () => {
-    if (isRunning || isHolding) return; // Silently ignore - button should be disabled
-    startSession();
-  };
-
-  // TAKE PROFIT: Close all + stop session
-  const handleTakeProfit = () => {
-    if (!hasPositions || (!isRunning && !isHolding)) return;
-    takeBurstProfit();
-    stopSession();
-  };
-
-  // HOLD: Toggle running <-> holding
-  const handleHold = () => {
-    if (isIdle || isStopped) return;
-    if (isRunning) holdSession();
-    else if (isHolding) resumeSession();
-  };
-
-  // CLOSE ALL: Emergency close all positions
-  const handleCloseAll = () => {
-    if (!hasPositions) return;
-    globalClose();
-  };
-
-  // Strict button enabled states
-  const activateEnabled = (isIdle || isStopped) && !tickInFlight;
-  const takeProfitEnabled = hasPositions && (isRunning || isHolding) && !tickInFlight;
-  const holdEnabled = (isRunning || isHolding) && !tickInFlight;
-  const closeAllEnabled = hasPositions && !tickInFlight;
-
-  const getStatusLabel = () => {
-    if (isStopped) return 'STOPPED';
-    if (isHolding) return 'HOLDING';
-    if (isRunning) return 'RUNNING';
-    return 'IDLE';
-  };
+  const { canActivate, canTakeProfit, canHold, canCloseAll, canChangeMode, isHolding, isArming } = useSessionButtons();
+  const { activateSession, toggleHold, takeProfit, closeAllPositions, changeMode } = useSessionActions();
 
   return (
     <div className="cockpit-panel">
@@ -102,12 +44,12 @@ export function CockpitPanel() {
       {/* Row 2: Mode Selector */}
       <div className="mode-row">
         {MODES.map(({ key, label, icon: Icon }) => {
-          const isSelected = selectedMode === key;
-          const isLocked = isRunning || isHolding;
+          const isSelected = mode === key;
+          const isLocked = !canChangeMode;
           return (
             <button
               key={key}
-              onClick={() => handleModeChange(key)}
+              onClick={() => changeMode(key)}
               disabled={isLocked && !isSelected}
               className={cn("mode-pill", isSelected && "mode-pill-active")}
             >
@@ -134,17 +76,24 @@ export function CockpitPanel() {
       {/* Row 4: Control Grid - 2x2 */}
       <div className="control-grid">
         <button
-          onClick={handleActivate}
-          disabled={!activateEnabled}
-          className={cn("ctrl-btn ctrl-btn-primary", isRunning && "ctrl-btn-active")}
+          onClick={activateSession}
+          disabled={!canActivate}
+          className={cn(
+            "ctrl-btn ctrl-btn-primary",
+            status === 'running' && "ctrl-btn-active"
+          )}
         >
-          {tickInFlight ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Power className="h-3.5 w-3.5" />}
-          <span>ACTIVATE</span>
+          {isArming || tickInFlight ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <Power className="h-3.5 w-3.5" />
+          )}
+          <span>{isArming ? 'ARMING...' : 'ACTIVATE'}</span>
         </button>
 
         <button
-          onClick={handleTakeProfit}
-          disabled={!takeProfitEnabled}
+          onClick={takeProfit}
+          disabled={!canTakeProfit}
           className="ctrl-btn ctrl-btn-success"
         >
           <DollarSign className="h-3.5 w-3.5" />
@@ -152,8 +101,8 @@ export function CockpitPanel() {
         </button>
 
         <button
-          onClick={handleHold}
-          disabled={!holdEnabled}
+          onClick={toggleHold}
+          disabled={!canHold}
           className={cn("ctrl-btn ctrl-btn-outline", isHolding && "ctrl-btn-holding")}
         >
           {isHolding ? <Play className="h-3.5 w-3.5" /> : <Pause className="h-3.5 w-3.5" />}
@@ -161,8 +110,8 @@ export function CockpitPanel() {
         </button>
 
         <button
-          onClick={handleCloseAll}
-          disabled={!closeAllEnabled}
+          onClick={closeAllPositions}
+          disabled={!canCloseAll}
           className="ctrl-btn ctrl-btn-danger"
         >
           <XCircle className="h-3.5 w-3.5" />
@@ -173,30 +122,32 @@ export function CockpitPanel() {
       {/* Row 5: Session Mini-Row */}
       <div className="session-row justify-center">
         <span className="session-label">Session:</span>
-        <span className={cn(
-          "session-status",
-          isRunning && "text-success",
-          isHolding && "text-warning",
-          (isStopped || isIdle) && "text-muted-foreground"
-        )}>
-          {getStatusLabel()}
+        <span className={cn("session-status", STATUS_COLORS[status])}>
+          {STATUS_LABELS[status]}
         </span>
         <span className="session-sep">·</span>
         <span>P&L:</span>
-        <span className={cn("session-pnl font-mono", todayPnl >= 0 ? "text-success" : "text-destructive")}>
-          {todayPnl >= 0 ? '+' : ''}${todayPnl.toFixed(2)}
+        <span className={cn("session-pnl font-mono", pnlToday >= 0 ? "text-success" : "text-destructive")}>
+          {pnlToday >= 0 ? '+' : ''}${pnlToday.toFixed(2)}
         </span>
         <span className="session-sep">·</span>
         <span>Trades:</span>
         <span className="session-trades">{tradesToday}</span>
-        {hasPositions && (
+        {openCount > 0 && (
           <>
             <span className="session-sep">·</span>
             <span>Open:</span>
-            <span className="text-primary font-medium">{openPositionsCount}</span>
+            <span className="text-primary font-medium">{openCount}</span>
           </>
         )}
       </div>
+
+      {/* Error message if present */}
+      {lastError && status === 'error' && (
+        <div className="text-[10px] text-destructive text-center mt-1 px-2 truncate">
+          {lastError}
+        </div>
+      )}
     </div>
   );
 }
