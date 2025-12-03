@@ -4,7 +4,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { useSymbols, usePaperConfig, usePaperStats } from '@/hooks/usePaperTrading';
-import { useTrading } from '@/context/TradingContext';
+import { useSession } from '@/lib/state/session';
 import { useState, useEffect } from 'react';
 
 const typeColors: Record<string, string> = {
@@ -15,7 +15,7 @@ const typeColors: Record<string, string> = {
 };
 
 export function MarketsTab() {
-  const { setActiveSymbol, tradingState } = useTrading();
+  const { selectedSymbol, setSymbol } = useSession();
   const { data: symbols, isLoading } = useSymbols();
   const { data: paperData } = usePaperStats();
   const { updateConfig } = usePaperConfig();
@@ -45,6 +45,10 @@ export function MarketsTab() {
     const newFilters = { ...typeFilters, [type]: !typeFilters[type] };
     setTypeFilters(newFilters);
     updateConfig.mutate({ market_config: { selectedSymbols, typeFilters: newFilters } });
+  };
+
+  const handleSelectSymbol = (symbol: string) => {
+    setSymbol(symbol);
   };
 
   const filteredSymbols = symbols?.filter(s => typeFilters[s.type]) || [];
@@ -80,7 +84,7 @@ export function MarketsTab() {
           </TableHeader>
           <TableBody>
             {filteredSymbols.map((market) => (
-              <TableRow key={market.id} className={tradingState.activeSymbol === market.symbol ? 'bg-primary/5' : ''}>
+              <TableRow key={market.id} className={selectedSymbol === market.symbol ? 'bg-primary/5' : ''}>
                 <TableCell>
                   <Checkbox checked={selectedSymbols.includes(market.symbol)} onCheckedChange={() => handleSymbolToggle(market.symbol)} />
                 </TableCell>
@@ -88,9 +92,9 @@ export function MarketsTab() {
                 <TableCell>{market.name}</TableCell>
                 <TableCell><Badge className={typeColors[market.type]}>{market.type.toUpperCase()}</Badge></TableCell>
                 <TableCell>
-                  <Button size="sm" variant={tradingState.activeSymbol === market.symbol ? 'secondary' : 'outline'}
-                    onClick={() => setActiveSymbol(market.symbol)}>
-                    {tradingState.activeSymbol === market.symbol ? 'Active' : 'Select'}
+                  <Button size="sm" variant={selectedSymbol === market.symbol ? 'secondary' : 'outline'}
+                    onClick={() => handleSelectSymbol(market.symbol)}>
+                    {selectedSymbol === market.symbol ? 'Active' : 'Select'}
                   </Button>
                 </TableCell>
               </TableRow>
