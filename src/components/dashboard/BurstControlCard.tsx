@@ -8,7 +8,8 @@ import { toast } from 'sonner';
 
 export function BurstControlCard() {
   const { triggerBurst, takeBurstProfit, globalClose, tickInFlight } = useTradingSession();
-  const { isRunning, setRunning } = useSession();
+  const { status, setStatus } = useSession();
+  const isRunning = status === 'running';
   const { data: paperData, isLoading } = usePaperStats();
   
   const stats = paperData?.stats;
@@ -17,14 +18,14 @@ export function BurstControlCard() {
   const isBurstRunning = burstStatus === 'running';
 
   const handleStartBurst = () => {
-    setRunning(true);
+    setStatus('running');
     triggerBurst();
     toast.success('Burst triggered (Paper)');
   };
 
   const handleGlobalClose = () => {
     globalClose();
-    setRunning(false);
+    setStatus('idle');
   };
 
   return (

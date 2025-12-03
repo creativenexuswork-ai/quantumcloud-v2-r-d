@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { useSession, AccountType } from '@/lib/state/session';
+import { useSession, AccountType, SessionStatus } from '@/lib/state/session';
 import { usePaperStats } from './usePaperTrading';
 
 /**
@@ -12,7 +12,7 @@ import { usePaperStats } from './usePaperTrading';
  * 
  * ARCHITECTURE NOTE:
  * This extends useSession from lib/state/session.ts to add mode-specific state.
- * The base session state (accountType, isRunning, selectedSymbol) remains in the original store.
+ * The base session state (accountType, status, selectedSymbol) remains in the original store.
  */
 
 export type TradingMode = 
@@ -25,7 +25,8 @@ export type TradingMode =
   | 'risk-off' 
   | 'ai-assist';
 
-export type SessionStatus = 'idle' | 'running' | 'paused' | 'error';
+// Re-export SessionStatus from session.ts for convenience
+export type { SessionStatus } from '@/lib/state/session';
 
 export interface RiskSettings {
   maxDailyDrawdown: number;
@@ -109,12 +110,12 @@ export const useTradingState = create<TradingState>((set) => ({
 
 // Combined hook for full session state
 export function useFullSessionState() {
-  const { accountType, isRunning, selectedSymbol, setAccountType, setRunning, setSymbol } = useSession();
+  const { accountType, status, selectedSymbol, setAccountType, setStatus, setSymbol } = useSession();
   const tradingState = useTradingState();
   const { data: paperData } = usePaperStats();
   
-  // Derive session status
-  const status: SessionStatus = isRunning ? 'running' : 'idle';
+  // Derive isRunning from status for backward compatibility
+  const isRunning = status === 'running';
   
   // Get performance from paper stats
   const todayPnl = paperData?.stats?.todayPnl || 0;
@@ -122,6 +123,9 @@ export function useFullSessionState() {
   const tradesToday = paperData?.stats?.tradesToday || 0;
   const winRate = paperData?.stats?.winRate || 0;
   const equity = paperData?.stats?.equity || 10000;
+  
+  // Helper to set running state (backward compatible)
+  const setRunning = (val: boolean) => setStatus(val ? 'running' : 'idle');
   
   return {
     // Account state
@@ -131,6 +135,7 @@ export function useFullSessionState() {
     // Session state
     isRunning,
     setRunning,
+    setStatus,
     status,
     
     // Symbol state

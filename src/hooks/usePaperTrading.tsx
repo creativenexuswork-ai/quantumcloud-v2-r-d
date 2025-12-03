@@ -164,7 +164,9 @@ export function usePaperTick() {
 
 export function useTradingSession() {
   const { session } = useAuth();
-  const { isRunning, setRunning } = useSession();
+  const { status, setStatus } = useSession();
+  const isRunning = status === 'running';
+  const setRunning = (val: boolean) => setStatus(val ? 'running' : 'idle');
   const [halted, setHalted] = useState(false);
   const [tickInFlight, setTickInFlight] = useState(false);
   

@@ -15,7 +15,8 @@ const regimeColors: Record<string, string> = {
 
 export function LiveStateCard() {
   const { startSession, stopSession, halted, tickInFlight } = useTradingSession();
-  const { isRunning } = useSession();
+  const { status } = useSession();
+  const isRunning = status === 'running';
   const { data: paperData } = usePaperStats();
   
   const config = paperData?.config;
