@@ -3,6 +3,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Play, Square } from 'lucide-react';
 import { useTrading } from '@/context/TradingContext';
+import { useTradingSession, usePaperStats } from '@/hooks/usePaperTrading';
 import { MODE_DEFINITIONS, ModeKey } from '@/hooks/useModeConfigs';
 
 const regimeColors: Record<string, string> = {
@@ -15,24 +16,35 @@ const regimeColors: Record<string, string> = {
 
 export function LiveStateCard() {
   const { tradingState, startMode, stopMode } = useTrading();
+  const { isActive, startSession, stopSession, halted, positions } = useTradingSession();
+  const { data: paperData } = usePaperStats();
+  
   const { activeMode, activeSymbol, regime, status } = tradingState;
-
   const modeInfo = activeMode ? MODE_DEFINITIONS[activeMode as ModeKey] : null;
+  const openPositions = paperData?.stats?.openPositionsCount || positions.length;
 
   const handleStart = () => {
+    if (halted) return;
+    startSession();
     if (activeSymbol) {
       startMode('quantum', activeSymbol);
     }
   };
 
   const handleStop = () => {
+    stopSession();
     stopMode();
   };
 
   return (
     <Card className="glass-card">
       <CardHeader className="pb-2">
-        <CardTitle className="text-lg font-semibold">Live State & Mode</CardTitle>
+        <div className="flex items-center justify-between">
+          <CardTitle className="text-lg font-semibold">Live State & Mode</CardTitle>
+          {halted && (
+            <Badge variant="destructive">Trading Halted</Badge>
+          )}
+        </div>
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="flex items-center justify-between">
@@ -56,6 +68,11 @@ export function LiveStateCard() {
               <p className="text-muted-foreground">No mode active</p>
             )}
           </div>
+          {isActive && (
+            <Badge className="bg-success/20 text-success animate-pulse">
+              Session Active
+            </Badge>
+          )}
         </div>
 
         <div className="space-y-2">
@@ -76,14 +93,19 @@ export function LiveStateCard() {
           </div>
 
           <div className="flex justify-between items-center">
+            <span className="text-sm text-muted-foreground">Open Positions</span>
+            <span className="font-medium">{openPositions}</span>
+          </div>
+
+          <div className="flex justify-between items-center">
             <span className="text-sm text-muted-foreground">Status</span>
             <span className={`text-sm font-medium ${
-              status === 'scanning' ? 'text-primary animate-pulse' :
-              status === 'in_trade' ? 'text-success' :
+              isActive ? 'text-success animate-pulse' :
+              halted ? 'text-destructive' :
               status === 'error' ? 'text-destructive' :
               'text-muted-foreground'
             }`}>
-              {status.replace('_', ' ').toUpperCase()}
+              {halted ? 'HALTED' : isActive ? 'RUNNING' : status.replace('_', ' ').toUpperCase()}
             </span>
           </div>
         </div>
@@ -97,20 +119,20 @@ export function LiveStateCard() {
         <div className="flex gap-2 pt-2">
           <Button 
             onClick={handleStart}
-            disabled={status !== 'idle'}
+            disabled={isActive || halted}
             className="flex-1 gap-2"
           >
             <Play className="h-4 w-4" />
-            Start Mode
+            Start Session
           </Button>
           <Button 
             onClick={handleStop}
-            disabled={status === 'idle'}
+            disabled={!isActive}
             variant="destructive"
             className="flex-1 gap-2"
           >
             <Square className="h-4 w-4" />
-            Stop Mode
+            Stop Session
           </Button>
         </div>
       </CardContent>
