@@ -1,8 +1,7 @@
-import { Zap, Crosshair, TrendingUp, Brain, Loader2, Power, DollarSign, Pause, XCircle, Play, TrendingDown } from 'lucide-react';
+import { Zap, Crosshair, TrendingUp, Brain, Loader2, Power, DollarSign, Pause, XCircle, Play } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { 
-  useSessionMachine, 
-  useSessionButtons, 
+  useSessionStore, 
   TradingMode,
   STATUS_LABELS,
   STATUS_COLORS 
@@ -24,10 +23,12 @@ export function CockpitPanel() {
     openCount, 
     tickInFlight,
     lastError,
-  } = useSessionMachine();
+  } = useSessionStore();
   
-  const { canActivate, canTakeProfit, canHold, canCloseAll, canChangeMode, isHolding, isArming } = useSessionButtons();
-  const { activateSession, toggleHold, takeProfit, closeAllPositions, changeMode } = useSessionActions();
+  const { buttonStates, activate, holdToggle, takeProfit, closeAll, changeMode } = useSessionActions();
+  const { canActivate, canHold, canTakeProfit, canCloseAll, canChangeMode } = buttonStates;
+  
+  const isHolding = status === 'holding';
 
   // Mock price data - in real app this would come from market data hook
   const priceChange = 1.2;
@@ -80,11 +81,11 @@ export function CockpitPanel() {
           <span className={cn(
             "rounded-full px-2 py-0.5 text-[10px] font-semibold",
             status === 'running' ? "bg-emerald-500/20 text-emerald-300" :
-            status === 'arming' ? "bg-amber-500/20 text-amber-300" :
+            status === 'holding' ? "bg-amber-500/20 text-amber-300" :
             status === 'error' ? "bg-red-500/20 text-red-300" :
             "bg-slate-700/50 text-slate-400"
           )}>
-            {status === 'running' ? 'Active' : status === 'arming' ? 'Arming' : status === 'error' ? 'Error' : 'Idle'}
+            {status === 'running' ? 'Active' : status === 'holding' ? 'Holding' : status === 'error' ? 'Error' : 'Idle'}
           </span>
         </div>
         <div className="flex items-center gap-1">
@@ -101,7 +102,7 @@ export function CockpitPanel() {
       <div className="grid grid-cols-2 gap-3">
         {/* ACTIVATE */}
         <button
-          onClick={activateSession}
+          onClick={activate}
           disabled={!canActivate}
           className={cn(
             "h-11 rounded-xl flex items-center justify-center gap-2 text-sm font-semibold transition-all",
@@ -110,12 +111,12 @@ export function CockpitPanel() {
               : "bg-blue-600/40 text-slate-50/60 cursor-not-allowed"
           )}
         >
-          {isArming || tickInFlight ? (
+          {tickInFlight ? (
             <Loader2 className="h-4 w-4 animate-spin" />
           ) : (
             <Power className="h-4 w-4" />
           )}
-          <span>{isArming ? 'ARMING...' : 'ACTIVATE'}</span>
+          <span>ACTIVATE</span>
         </button>
 
         {/* TAKE PROFIT */}
@@ -135,7 +136,7 @@ export function CockpitPanel() {
 
         {/* HOLD */}
         <button
-          onClick={toggleHold}
+          onClick={holdToggle}
           disabled={!canHold}
           className={cn(
             "h-11 rounded-xl flex items-center justify-center gap-2 text-sm font-semibold transition-all",
@@ -152,7 +153,7 @@ export function CockpitPanel() {
 
         {/* CLOSE ALL */}
         <button
-          onClick={closeAllPositions}
+          onClick={closeAll}
           disabled={!canCloseAll}
           className={cn(
             "h-11 rounded-xl flex items-center justify-center gap-2 text-sm font-semibold transition-all",
@@ -170,13 +171,7 @@ export function CockpitPanel() {
       <div className="flex items-center justify-between text-[11px] text-slate-300 pt-2 border-t border-slate-800/80">
         <div className="flex items-center gap-1.5">
           <span className="text-slate-500">Session:</span>
-          <span className={cn(
-            "font-bold uppercase",
-            status === 'running' ? "text-emerald-400" :
-            status === 'holding' ? "text-amber-300" :
-            status === 'error' ? "text-red-400" :
-            "text-slate-400"
-          )}>
+          <span className={cn("font-bold uppercase", STATUS_COLORS[status])}>
             {STATUS_LABELS[status]}
           </span>
         </div>
