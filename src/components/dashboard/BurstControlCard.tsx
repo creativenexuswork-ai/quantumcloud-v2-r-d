@@ -3,15 +3,29 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Zap, DollarSign, X, Loader2 } from 'lucide-react';
 import { useTradingSession, usePaperStats } from '@/hooks/usePaperTrading';
+import { useSession } from '@/lib/state/session';
+import { toast } from 'sonner';
 
 export function BurstControlCard() {
-  const { triggerBurst, takeBurstProfit, globalClose, isActive, tickInFlight } = useTradingSession();
+  const { triggerBurst, takeBurstProfit, globalClose, tickInFlight } = useTradingSession();
+  const { isRunning, setRunning } = useSession();
   const { data: paperData, isLoading } = usePaperStats();
   
   const stats = paperData?.stats;
   const burstStatus = stats?.burstStatus || 'idle';
   const isLocked = burstStatus === 'locked';
-  const isRunning = burstStatus === 'running';
+  const isBurstRunning = burstStatus === 'running';
+
+  const handleStartBurst = () => {
+    setRunning(true);
+    triggerBurst();
+    toast.success('Burst triggered (Paper)');
+  };
+
+  const handleGlobalClose = () => {
+    globalClose();
+    setRunning(false);
+  };
 
   return (
     <Card className="glass-card">
@@ -26,7 +40,7 @@ export function BurstControlCard() {
               Target Reached
             </Badge>
           )}
-          {isRunning && (
+          {isBurstRunning && (
             <Badge className="bg-warning/20 text-warning animate-pulse">
               Burst Running
             </Badge>
@@ -60,7 +74,7 @@ export function BurstControlCard() {
 
         <div className="grid grid-cols-2 gap-2">
           <Button
-            onClick={triggerBurst}
+            onClick={handleStartBurst}
             disabled={isLocked || isRunning || tickInFlight}
             className="gap-2"
             size="sm"
@@ -85,7 +99,7 @@ export function BurstControlCard() {
         </div>
 
         <Button
-          onClick={globalClose}
+          onClick={handleGlobalClose}
           disabled={tickInFlight}
           variant="destructive"
           size="sm"

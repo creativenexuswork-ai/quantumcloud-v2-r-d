@@ -1,8 +1,10 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useEffect, useCallback, useRef, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from './useAuth';
 import { toast } from './use-toast';
+import { useSession } from '@/lib/state/session';
+
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const TICK_INTERVAL_MS = 4000;
@@ -162,21 +164,18 @@ export function usePaperTick() {
 
 export function useTradingSession() {
   const { session } = useAuth();
-  const [isActive, setIsActive] = useState(false);
-  const [stats, setStats] = useState<PaperStats | null>(null);
-  const [positions, setPositions] = useState<PaperPosition[]>([]);
+  const { isRunning, setRunning } = useSession();
   const [halted, setHalted] = useState(false);
   const [tickInFlight, setTickInFlight] = useState(false);
   
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
-  const isActiveRef = useRef(false);
+  const isRunningRef = useRef(false);
   const tickInFlightRef = useRef(false);
   const queryClient = useQueryClient();
 
-  // Keep refs in sync with state
   useEffect(() => {
-    isActiveRef.current = isActive;
-  }, [isActive]);
+    isRunningRef.current = isRunning;
+  }, [isRunning]);
 
   useEffect(() => {
     tickInFlightRef.current = tickInFlight;
@@ -209,8 +208,6 @@ export function useTradingSession() {
       }
       
       const data = await response.json();
-      setStats(data.stats);
-      setPositions(data.positions || []);
       setHalted(data.halted || false);
       queryClient.invalidateQueries({ queryKey: ['paper-stats'] });
 
@@ -229,8 +226,8 @@ export function useTradingSession() {
       clearInterval(intervalRef.current);
       intervalRef.current = null;
     }
-    setIsActive(false);
-    isActiveRef.current = false;
+    setRunning(false);
+    isRunningRef.current = false;
     
     try {
       const { data: { user } } = await supabase.auth.getUser();
@@ -240,22 +237,20 @@ export function useTradingSession() {
     } catch (e) {
       console.error('Failed to update is_running:', e);
     }
-  }, []);
+  }, [setRunning]);
 
   const startSession = useCallback(async () => {
-    if (halted || isActive) return;
+    if (halted || isRunning) return;
     
     try {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
 
-      // Update config to mark session as running
       await supabase.from('paper_config').update({ 
         is_running: true, 
         session_started_at: new Date().toISOString() 
       } as any).eq('user_id', user.id);
 
-      // Log session start
       await supabase.from('system_logs').insert({
         user_id: user.id, 
         level: 'info', 
@@ -263,13 +258,11 @@ export function useTradingSession() {
         message: 'Trading session started',
       });
 
-      setIsActive(true);
-      isActiveRef.current = true;
+      setRunning(true);
+      isRunningRef.current = true;
       
-      // Run first tick immediately
       const result = await runTickInternal();
       
-      // If halted on first tick, don't start the interval
       if (result?.halted) {
         toast({
           title: 'Trading Halted',
@@ -280,9 +273,8 @@ export function useTradingSession() {
         return;
       }
       
-      // Start interval for subsequent ticks
       intervalRef.current = setInterval(async () => {
-        if (!isActiveRef.current) return;
+        if (!isRunningRef.current) return;
         
         const tickResult = await runTickInternal();
         if (tickResult?.halted) {
@@ -300,7 +292,7 @@ export function useTradingSession() {
       console.error('Start session error:', error);
       toast({ title: 'Error', description: 'Failed to start session', variant: 'destructive' });
     }
-  }, [halted, isActive, runTickInternal, stopSessionInternal]);
+  }, [halted, isRunning, runTickInternal, stopSessionInternal, setRunning]);
 
   const stopSession = useCallback(async () => {
     await stopSessionInternal();
@@ -337,13 +329,8 @@ export function useTradingSession() {
       });
       
       if (response.ok) {
-        const data = await response.json();
-        setStats(data.stats);
-        setPositions(data.positions || []);
+        queryClient.invalidateQueries({ queryKey: ['paper-stats'] });
       }
-      
-      toast({ title: 'Burst Triggered' });
-      queryClient.invalidateQueries({ queryKey: ['paper-stats'] });
     } catch (error) {
       console.error('Burst trigger error:', error);
       toast({ title: 'Error', description: 'Failed to trigger burst', variant: 'destructive' });
@@ -365,13 +352,10 @@ export function useTradingSession() {
       });
       
       if (response.ok) {
-        const data = await response.json();
-        setStats(data.stats);
-        setPositions(data.positions || []);
+        queryClient.invalidateQueries({ queryKey: ['paper-stats'] });
       }
       
       toast({ title: 'Burst Profit Taken' });
-      queryClient.invalidateQueries({ queryKey: ['paper-stats'] });
     } catch (error) {
       console.error('Take burst profit error:', error);
       toast({ title: 'Error', description: 'Failed to take burst profit', variant: 'destructive' });
@@ -393,20 +377,16 @@ export function useTradingSession() {
       });
       
       if (response.ok) {
-        const data = await response.json();
-        setStats(data.stats);
-        setPositions([]);
+        queryClient.invalidateQueries({ queryKey: ['paper-stats'] });
       }
       
       toast({ title: 'Global Close', description: 'All positions closed' });
-      queryClient.invalidateQueries({ queryKey: ['paper-stats'] });
     } catch (error) {
       console.error('Global close error:', error);
       toast({ title: 'Error', description: 'Failed to close positions', variant: 'destructive' });
     }
   }, [queryClient]);
 
-  // Check session state on mount and restore if needed
   useEffect(() => {
     let mounted = true;
     
@@ -425,12 +405,10 @@ export function useTradingSession() {
         if (config) {
           setHalted(config.trading_halted_for_day || false);
           
-          // Resume session if it was running
           if ((config as any).is_running && !config.trading_halted_for_day) {
-            setIsActive(true);
-            isActiveRef.current = true;
+            setRunning(true);
+            isRunningRef.current = true;
             
-            // Run first tick
             const result = await runTickInternal();
             
             if (!mounted) return;
@@ -440,9 +418,8 @@ export function useTradingSession() {
               return;
             }
             
-            // Start interval
             intervalRef.current = setInterval(async () => {
-              if (!isActiveRef.current) return;
+              if (!isRunningRef.current) return;
               
               const tickResult = await runTickInternal();
               if (tickResult?.halted) {
@@ -458,7 +435,6 @@ export function useTradingSession() {
     
     checkSessionState();
     
-    // Cleanup on unmount
     return () => {
       mounted = false;
       if (intervalRef.current) {
@@ -466,12 +442,10 @@ export function useTradingSession() {
         intervalRef.current = null;
       }
     };
-  }, [session?.user?.id]); // Only depend on user ID
+  }, [session?.user?.id, setRunning]);
 
   return {
-    isActive, 
-    stats, 
-    positions, 
+    isActive: isRunning, 
     halted, 
     tickInFlight,
     startSession, 
@@ -498,15 +472,15 @@ export function usePaperConfig() {
       if (!user) throw new Error('Not authenticated');
 
       const { error } = await supabase.from('paper_config').update({
-        ...updates as any,
+        ...updates,
         updated_at: new Date().toISOString(),
-      }).eq('user_id', user.id);
+      } as any).eq('user_id', user.id);
 
       if (error) throw error;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['paper-stats'] });
-      toast({ title: 'Config Updated', description: 'Settings saved' });
+      toast({ title: 'Settings saved' });
     },
     onError: (error) => {
       console.error('Config update error:', error);
@@ -518,31 +492,27 @@ export function usePaperConfig() {
 }
 
 export function useSymbols() {
-  return useQuery({
-    queryKey: ['symbols'],
-    queryFn: async () => {
-      const { data, error } = await supabase.from('symbols').select('*').order('symbol');
-      if (error) throw error;
-      return data;
-    },
-  });
-}
-
-export function useSystemLogs() {
   const { session } = useAuth();
 
   return useQuery({
-    queryKey: ['system-logs'],
+    queryKey: ['symbols'],
     queryFn: async () => {
       const { data, error } = await supabase
-        .from('system_logs')
+        .from('symbols')
         .select('*')
-        .order('created_at', { ascending: false })
-        .limit(100);
+        .eq('is_active', true)
+        .order('symbol');
+
       if (error) throw error;
-      return data;
+      return data as Array<{
+        id: string;
+        symbol: string;
+        name: string;
+        type: string;
+        is_active: boolean;
+        spread_estimate: number | null;
+      }>;
     },
     enabled: !!session,
-    refetchInterval: 5000,
   });
 }

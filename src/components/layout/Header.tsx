@@ -1,4 +1,3 @@
-import { useState } from 'react';
 import { ChevronDown, LogOut, User } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
@@ -9,14 +8,14 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { useAuth } from '@/hooks/useAuth';
 import { useAccounts, useSetActiveAccount } from '@/hooks/useAccounts';
-import { useTrading } from '@/context/TradingContext';
 import { StatusPill } from '@/components/ui/StatusPill';
+import { useSession } from '@/lib/state/session';
 
 export function Header() {
   const { user, signOut } = useAuth();
   const { data: accounts } = useAccounts();
   const setActiveAccount = useSetActiveAccount();
-  const { tradingState } = useTrading();
+  const { accountType, setAccountType, isRunning } = useSession();
   
   const activeAccount = accounts?.find(a => a.is_active);
   const equity = activeAccount?.equity || 0;
@@ -24,6 +23,13 @@ export function Header() {
   const handleAccountChange = (accountId: string) => {
     setActiveAccount.mutate(accountId);
   };
+
+  const handleAccountTypeChange = (type: 'paper' | 'live') => {
+    setAccountType(type);
+  };
+
+  // Derive status from global state
+  const status = isRunning ? 'scanning' : 'idle';
 
   return (
     <header className="glass-card border-b border-border/30 px-6 py-4">
@@ -69,18 +75,18 @@ export function Header() {
 
           <div className="flex gap-2">
             <Button
-              variant={activeAccount?.type === 'paper' ? 'default' : 'outline'}
+              variant={accountType === 'paper' ? 'default' : 'outline'}
               size="sm"
               className="text-xs"
-              disabled
+              onClick={() => handleAccountTypeChange('paper')}
             >
               Paper Trading
             </Button>
             <Button
-              variant={activeAccount?.type === 'live' ? 'default' : 'outline'}
+              variant={accountType === 'live' ? 'default' : 'outline'}
               size="sm"
               className="text-xs"
-              disabled
+              onClick={() => handleAccountTypeChange('live')}
             >
               Live Trading
             </Button>
@@ -101,7 +107,14 @@ export function Header() {
             <p className="metric-value profit-text">+0.00%</p>
           </div>
 
-          <StatusPill status={tradingState.status} />
+          {/* Paper Trading indicator pill */}
+          {accountType === 'paper' && (
+            <span className="px-3 py-1 rounded-full text-xs font-medium bg-primary/20 text-primary">
+              Paper Trading
+            </span>
+          )}
+
+          <StatusPill status={status} />
 
           <DropdownMenu>
             <DropdownMenuTrigger asChild>

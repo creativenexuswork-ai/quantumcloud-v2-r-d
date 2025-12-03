@@ -3,6 +3,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Play, Square, Loader2 } from 'lucide-react';
 import { useTradingSession, usePaperStats } from '@/hooks/usePaperTrading';
+import { useSession } from '@/lib/state/session';
 
 const regimeColors: Record<string, string> = {
   trend: 'bg-success/20 text-success',
@@ -13,17 +14,14 @@ const regimeColors: Record<string, string> = {
 };
 
 export function LiveStateCard() {
-  const { isActive, startSession, stopSession, halted, tickInFlight } = useTradingSession();
+  const { startSession, stopSession, halted, tickInFlight } = useTradingSession();
+  const { isRunning } = useSession();
   const { data: paperData } = usePaperStats();
   
   const config = paperData?.config;
   const enabledModes = config?.mode_config?.enabledModes || [];
   const selectedSymbols = config?.market_config?.selectedSymbols || [];
   const openPositions = paperData?.stats?.openPositionsCount || 0;
-
-  // Determine primary mode and symbol for display
-  const activeMode = enabledModes[0] || null;
-  const activeSymbol = selectedSymbols[0] || 'BTCUSDT';
 
   return (
     <Card className="glass-card">
@@ -49,7 +47,7 @@ export function LiveStateCard() {
               <p className="text-muted-foreground">No modes enabled</p>
             )}
           </div>
-          {isActive && (
+          {isRunning && (
             <Badge className="bg-success/20 text-success animate-pulse">
               {tickInFlight ? 'Ticking...' : 'Session Active'}
             </Badge>
@@ -73,16 +71,16 @@ export function LiveStateCard() {
           <div className="flex justify-between items-center">
             <span className="text-sm text-muted-foreground">Status</span>
             <span className={`text-sm font-medium ${
-              isActive ? 'text-success animate-pulse' :
+              isRunning ? 'text-success animate-pulse' :
               halted ? 'text-destructive' :
               'text-muted-foreground'
             }`}>
-              {halted ? 'HALTED' : isActive ? 'RUNNING' : 'IDLE'}
+              {halted ? 'HALTED' : isRunning ? 'RUNNING' : 'IDLE'}
             </span>
           </div>
         </div>
 
-        {activeMode && isActive && (
+        {enabledModes.length > 0 && isRunning && (
           <p className="text-xs text-muted-foreground">
             Engine running {enabledModes.length} mode(s) on {selectedSymbols.length} symbol(s)
           </p>
@@ -91,7 +89,7 @@ export function LiveStateCard() {
         <div className="flex gap-2 pt-2">
           <Button 
             onClick={startSession}
-            disabled={isActive || halted || enabledModes.length === 0}
+            disabled={isRunning || halted || enabledModes.length === 0}
             className="flex-1 gap-2"
           >
             {tickInFlight ? (
@@ -99,11 +97,11 @@ export function LiveStateCard() {
             ) : (
               <Play className="h-4 w-4" />
             )}
-            {isActive ? 'Running...' : 'Start Session'}
+            {isRunning ? 'Running...' : 'Start Session'}
           </Button>
           <Button 
             onClick={stopSession}
-            disabled={!isActive}
+            disabled={!isRunning}
             variant="destructive"
             className="flex-1 gap-2"
           >
