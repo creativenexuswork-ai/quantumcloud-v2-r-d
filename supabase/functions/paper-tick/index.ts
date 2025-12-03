@@ -11,6 +11,7 @@ const DEFAULT_RISK_CONFIG = {
   maxDailyLossPercent: 5,
   maxConcurrentRiskPercent: 10,
   maxOpenTrades: 20,
+  maxPerSymbolExposure: 30,
 };
 
 const DEFAULT_BURST_CONFIG = {
@@ -29,6 +30,296 @@ const DEFAULT_MARKET_CONFIG = {
   typeFilters: { crypto: true, forex: true, index: true, metal: true },
 };
 
+// ============== Trading Mode Logic (inline for edge function) ==============
+
+type Side = 'long' | 'short';
+type TradingMode = 'sniper' | 'burst' | 'trend' | 'swing' | 'memory' | 'stealth' | 'news' | 'hybrid';
+
+interface PriceTick {
+  symbol: string;
+  bid: number;
+  ask: number;
+  mid: number;
+  timestamp: string;
+  volatility?: number;
+  regime?: string;
+}
+
+interface ProposedOrder {
+  symbol: string;
+  side: Side;
+  size: number;
+  entryPrice: number;
+  sl?: number;
+  tp?: number;
+  mode: TradingMode;
+  reason?: string;
+  confidence?: number;
+  batchId?: string;
+}
+
+interface EngineContext {
+  selectedSymbols: string[];
+  ticks: Record<string, PriceTick>;
+  equity: number;
+  winRate: number;
+  recentTrades: any[];
+  modeSettings: Record<string, any>;
+  burstConfig: any;
+  burstRequested: boolean;
+}
+
+function detectTrend(tick: PriceTick): 'up' | 'down' | 'neutral' {
+  if (tick.regime === 'trend') {
+    return tick.volatility && tick.volatility > 0.5 ? 'up' : 'down';
+  }
+  return 'neutral';
+}
+
+function calculateSize(equity: number, riskPercent: number, price: number, slDistance: number): number {
+  if (slDistance === 0) return 0;
+  const riskAmount = equity * (riskPercent / 100);
+  return Math.max(0.001, riskAmount / slDistance);
+}
+
+function generateBatchId(): string {
+  return `burst_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+}
+
+function runSniperMode(ctx: EngineContext): ProposedOrder[] {
+  const orders: ProposedOrder[] = [];
+  const riskPct = ctx.modeSettings?.sniper?.riskPerTrade ?? 0.5;
+  
+  for (const symbol of ctx.selectedSymbols) {
+    const tick = ctx.ticks[symbol];
+    if (!tick || tick.regime !== 'trend') continue;
+    if (tick.volatility && tick.volatility > 0.7) continue;
+    
+    const trend = detectTrend(tick);
+    if (trend === 'neutral') continue;
+    
+    const side: Side = trend === 'up' ? 'long' : 'short';
+    const slDistance = tick.mid * 0.015;
+    const tpDistance = tick.mid * 0.03;
+    const size = calculateSize(ctx.equity, riskPct, tick.mid, slDistance);
+    
+    orders.push({
+      symbol, side, size,
+      entryPrice: tick.mid,
+      sl: side === 'long' ? tick.mid - slDistance : tick.mid + slDistance,
+      tp: side === 'long' ? tick.mid + tpDistance : tick.mid - tpDistance,
+      mode: 'sniper',
+      reason: `Clear ${trend} trend detected`,
+      confidence: 0.8
+    });
+  }
+  return orders.slice(0, 2);
+}
+
+function runBurstMode(ctx: EngineContext): ProposedOrder[] {
+  if (!ctx.burstRequested) return [];
+  
+  const orders: ProposedOrder[] = [];
+  const burstSize = ctx.burstConfig?.size ?? 20;
+  const totalRisk = ctx.burstConfig?.riskPerBurstPercent ?? 2;
+  const riskPerTrade = totalRisk / burstSize;
+  
+  let bestSymbol: string | null = null;
+  let bestScore = 0;
+  
+  for (const symbol of ctx.selectedSymbols) {
+    const tick = ctx.ticks[symbol];
+    if (!tick || tick.regime === 'low_vol') continue;
+    const score = (tick.volatility ?? 0.5) * (tick.regime === 'trend' ? 1.5 : 1);
+    if (score > bestScore) { bestScore = score; bestSymbol = symbol; }
+  }
+  
+  if (!bestSymbol) return [];
+  
+  const tick = ctx.ticks[bestSymbol];
+  const trend = detectTrend(tick);
+  const side: Side = trend === 'down' ? 'short' : 'long';
+  const batchId = generateBatchId();
+  
+  for (let i = 0; i < burstSize; i++) {
+    const slDistance = tick.mid * 0.005;
+    const tpDistance = tick.mid * 0.01;
+    const size = calculateSize(ctx.equity, riskPerTrade, tick.mid, slDistance);
+    const priceOffset = (Math.random() - 0.5) * tick.mid * 0.0002;
+    
+    orders.push({
+      symbol: bestSymbol, side, size,
+      entryPrice: tick.mid + priceOffset,
+      sl: side === 'long' ? tick.mid - slDistance : tick.mid + slDistance,
+      tp: side === 'long' ? tick.mid + tpDistance : tick.mid - tpDistance,
+      mode: 'burst',
+      reason: `Burst trade ${i + 1}/${burstSize}`,
+      confidence: 0.6,
+      batchId
+    });
+  }
+  return orders;
+}
+
+function runTrendMode(ctx: EngineContext): ProposedOrder[] {
+  const orders: ProposedOrder[] = [];
+  const riskPct = ctx.modeSettings?.trend?.riskPerTrade ?? 1;
+  
+  for (const symbol of ctx.selectedSymbols) {
+    const tick = ctx.ticks[symbol];
+    if (!tick || tick.regime !== 'trend') continue;
+    
+    const trend = detectTrend(tick);
+    if (trend === 'neutral') continue;
+    
+    const side: Side = trend === 'up' ? 'long' : 'short';
+    const slDistance = tick.mid * 0.01;
+    const tpDistance = tick.mid * 0.02;
+    const size = calculateSize(ctx.equity, riskPct, tick.mid, slDistance);
+    
+    orders.push({
+      symbol, side, size, entryPrice: tick.mid,
+      sl: side === 'long' ? tick.mid - slDistance : tick.mid + slDistance,
+      tp: side === 'long' ? tick.mid + tpDistance : tick.mid - tpDistance,
+      mode: 'trend', reason: `Following ${trend} trend`, confidence: 0.7
+    });
+  }
+  return orders.slice(0, 3);
+}
+
+function runSwingMode(ctx: EngineContext): ProposedOrder[] {
+  const orders: ProposedOrder[] = [];
+  const riskPct = ctx.modeSettings?.swing?.riskPerTrade ?? 2;
+  
+  for (const symbol of ctx.selectedSymbols) {
+    const tick = ctx.ticks[symbol];
+    if (!tick || tick.regime === 'high_vol') continue;
+    
+    const trend = detectTrend(tick);
+    if (trend === 'neutral') continue;
+    
+    const side: Side = trend === 'up' ? 'long' : 'short';
+    const slDistance = tick.mid * 0.025;
+    const tpDistance = tick.mid * 0.05;
+    const size = calculateSize(ctx.equity, riskPct, tick.mid, slDistance);
+    
+    orders.push({
+      symbol, side, size, entryPrice: tick.mid,
+      sl: side === 'long' ? tick.mid - slDistance : tick.mid + slDistance,
+      tp: side === 'long' ? tick.mid + tpDistance : tick.mid - tpDistance,
+      mode: 'swing', reason: `Swing on ${trend} bias`, confidence: 0.65
+    });
+  }
+  return orders.slice(0, 2);
+}
+
+function runMemoryMode(ctx: EngineContext): ProposedOrder[] {
+  const orders: ProposedOrder[] = [];
+  const riskMultiplier = ctx.winRate > 60 ? 1.2 : ctx.winRate < 40 ? 0.5 : 1;
+  const riskPct = 1 * riskMultiplier;
+  
+  const successfulSymbols = new Set(ctx.recentTrades.filter(t => t.realized_pnl > 0).map(t => t.symbol));
+  
+  for (const symbol of ctx.selectedSymbols) {
+    const tick = ctx.ticks[symbol];
+    if (!tick) continue;
+    
+    const trend = detectTrend(tick);
+    if (trend === 'neutral') continue;
+    
+    const side: Side = trend === 'up' ? 'long' : 'short';
+    const slDistance = tick.mid * 0.012;
+    const tpDistance = tick.mid * 0.018;
+    const size = calculateSize(ctx.equity, riskPct, tick.mid, slDistance);
+    const symbolBonus = successfulSymbols.has(symbol) ? 0.1 : 0;
+    
+    orders.push({
+      symbol, side, size, entryPrice: tick.mid,
+      sl: side === 'long' ? tick.mid - slDistance : tick.mid + slDistance,
+      tp: side === 'long' ? tick.mid + tpDistance : tick.mid - tpDistance,
+      mode: 'memory', reason: `Adaptive (win rate: ${ctx.winRate.toFixed(0)}%)`, confidence: 0.6 + symbolBonus
+    });
+  }
+  return orders.slice(0, 3);
+}
+
+function runStealthMode(ctx: EngineContext): ProposedOrder[] {
+  if (Math.random() > 0.3) return [];
+  
+  const orders: ProposedOrder[] = [];
+  const riskPct = ctx.modeSettings?.stealth?.riskPerTrade ?? 0.5;
+  const symbols = [...ctx.selectedSymbols].sort(() => Math.random() - 0.5);
+  
+  for (const symbol of symbols.slice(0, 2)) {
+    const tick = ctx.ticks[symbol];
+    if (!tick) continue;
+    
+    const trend = detectTrend(tick);
+    if (trend === 'neutral') continue;
+    
+    const side: Side = trend === 'up' ? 'long' : 'short';
+    const slVariance = 1 + (Math.random() - 0.5) * 0.2;
+    const slDistance = tick.mid * 0.01 * slVariance;
+    const tpDistance = tick.mid * 0.015 * slVariance;
+    const rawSize = calculateSize(ctx.equity, riskPct, tick.mid, slDistance);
+    const size = Math.round(rawSize * 100) / 100;
+    
+    orders.push({
+      symbol, side, size, entryPrice: tick.mid,
+      sl: side === 'long' ? tick.mid - slDistance : tick.mid + slDistance,
+      tp: side === 'long' ? tick.mid + tpDistance : tick.mid - tpDistance,
+      mode: 'stealth', reason: 'Stealth entry', confidence: 0.55
+    });
+  }
+  return orders.slice(0, 1);
+}
+
+function runNewsMode(ctx: EngineContext): ProposedOrder[] {
+  const orders: ProposedOrder[] = [];
+  const riskPct = ctx.modeSettings?.news?.riskPerTrade ?? 0.5;
+  
+  for (const symbol of ctx.selectedSymbols) {
+    const tick = ctx.ticks[symbol];
+    if (!tick || tick.regime === 'high_vol') continue;
+    if (tick.volatility && tick.volatility > 0.6) continue;
+    
+    const trend = detectTrend(tick);
+    if (trend === 'neutral') continue;
+    
+    const side: Side = trend === 'up' ? 'long' : 'short';
+    const slDistance = tick.mid * 0.008;
+    const tpDistance = tick.mid * 0.016;
+    const size = calculateSize(ctx.equity, riskPct, tick.mid, slDistance);
+    
+    orders.push({
+      symbol, side, size, entryPrice: tick.mid,
+      sl: side === 'long' ? tick.mid - slDistance : tick.mid + slDistance,
+      tp: side === 'long' ? tick.mid + tpDistance : tick.mid - tpDistance,
+      mode: 'news', reason: 'Low news-risk environment', confidence: 0.7
+    });
+  }
+  return orders.slice(0, 2);
+}
+
+function runHybridMode(ctx: EngineContext): ProposedOrder[] {
+  const sniperOrders = runSniperMode(ctx);
+  const trendOrders = runTrendMode(ctx);
+  const swingOrders = runSwingMode(ctx);
+  
+  const ordersBySymbol = new Map<string, ProposedOrder>();
+  for (const order of [...swingOrders, ...trendOrders, ...sniperOrders]) {
+    ordersBySymbol.set(order.symbol, { ...order, mode: 'hybrid', reason: `Hybrid: ${order.reason}` });
+  }
+  return Array.from(ordersBySymbol.values()).slice(0, 3);
+}
+
+const MODE_RUNNERS: Record<TradingMode, (ctx: EngineContext) => ProposedOrder[]> = {
+  sniper: runSniperMode, burst: runBurstMode, trend: runTrendMode, swing: runSwingMode,
+  memory: runMemoryMode, stealth: runStealthMode, news: runNewsMode, hybrid: runHybridMode,
+};
+
+// ============== Main Handler ==============
+
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
@@ -39,26 +330,23 @@ serve(async (req) => {
     const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
     const supabase = createClient(supabaseUrl, supabaseKey);
 
-    // Get user from auth header
     const authHeader = req.headers.get('Authorization')?.replace('Bearer ', '');
     if (!authHeader) {
       return new Response(JSON.stringify({ error: 'Unauthorized' }), {
-        status: 401,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       });
     }
 
     const { data: { user }, error: authError } = await supabase.auth.getUser(authHeader);
     if (authError || !user) {
       return new Response(JSON.stringify({ error: 'Invalid auth' }), {
-        status: 401,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       });
     }
 
     const userId = user.id;
     const body = await req.json().catch(() => ({}));
-    const { action, burstRequested, globalClose, takeBurstProfit } = body;
+    const { burstRequested, globalClose, takeBurstProfit } = body;
 
     // Fetch latest prices
     const priceResponse = await fetch(`${supabaseUrl}/functions/v1/price-feed`, {
@@ -85,27 +373,17 @@ serve(async (req) => {
         })
         .select()
         .single();
-      
       if (createError) throw createError;
       config = newConfig;
     }
 
-    // Load open positions
-    const { data: positions } = await supabase
-      .from('paper_positions')
-      .select('*')
-      .eq('user_id', userId)
-      .eq('closed', false);
-
-    // Load today's trades
+    const riskConfig = config.risk_config || DEFAULT_RISK_CONFIG;
+    const burstConfig = config.burst_config || DEFAULT_BURST_CONFIG;
+    const modeConfig = config.mode_config || DEFAULT_MODE_CONFIG;
+    const marketConfig = config.market_config || DEFAULT_MARKET_CONFIG;
     const today = new Date().toISOString().split('T')[0];
-    const { data: todayTrades } = await supabase
-      .from('paper_trades')
-      .select('*')
-      .eq('user_id', userId)
-      .eq('session_date', today);
 
-    // Get starting equity from daily stats or account
+    // Get starting equity
     const { data: dailyStats } = await supabase
       .from('paper_stats_daily')
       .select('equity_start')
@@ -122,284 +400,341 @@ serve(async (req) => {
 
     const startingEquity = dailyStats?.equity_start ?? account?.equity ?? 10000;
 
-    // Transform data for engine
-    const enginePositions = (positions || []).map((p: any) => ({
-      id: p.id,
-      userId: p.user_id,
-      symbol: p.symbol,
-      mode: p.mode,
-      side: p.side,
-      size: Number(p.size),
-      entryPrice: Number(p.entry_price),
-      sl: p.sl ? Number(p.sl) : undefined,
-      tp: p.tp ? Number(p.tp) : undefined,
-      openedAt: p.opened_at,
-      unrealizedPnl: Number(p.unrealized_pnl || 0),
-      batchId: p.batch_id,
-    }));
+    // Load positions and trades
+    const { data: positions } = await supabase
+      .from('paper_positions')
+      .select('*')
+      .eq('user_id', userId)
+      .eq('closed', false);
 
-    const engineTrades = (todayTrades || []).map((t: any) => ({
-      id: t.id,
-      userId: t.user_id,
-      symbol: t.symbol,
-      mode: t.mode,
-      side: t.side,
-      size: Number(t.size),
-      entryPrice: Number(t.entry_price),
-      exitPrice: Number(t.exit_price),
-      sl: t.sl ? Number(t.sl) : undefined,
-      tp: t.tp ? Number(t.tp) : undefined,
-      openedAt: t.opened_at,
-      closedAt: t.closed_at,
-      realizedPnl: Number(t.realized_pnl),
-      reason: t.reason,
-      sessionDate: t.session_date,
-      batchId: t.batch_id,
-    }));
+    const { data: todayTrades } = await supabase
+      .from('paper_trades')
+      .select('*')
+      .eq('user_id', userId)
+      .eq('session_date', today);
 
-    // Handle special actions
-    if (globalClose) {
-      // Close all positions
-      for (const pos of enginePositions) {
-        const tick = ticks[pos.symbol];
-        const exitPrice = tick ? (pos.side === 'long' ? tick.bid : tick.ask) : pos.entryPrice;
-        const priceDiff = pos.side === 'long' ? exitPrice - pos.entryPrice : pos.entryPrice - exitPrice;
-        const realizedPnl = priceDiff * pos.size;
+    // Calculate current stats
+    const realizedPnl = (todayTrades || []).reduce((sum: number, t: any) => sum + Number(t.realized_pnl), 0);
+    const unrealizedPnl = (positions || []).reduce((sum: number, p: any) => sum + Number(p.unrealized_pnl || 0), 0);
+    const currentPnl = realizedPnl + unrealizedPnl;
+    const currentPnlPercent = startingEquity > 0 ? (currentPnl / startingEquity) * 100 : 0;
+    const closedCount = (todayTrades || []).length;
+    const wins = (todayTrades || []).filter((t: any) => Number(t.realized_pnl) > 0).length;
+    const winRate = closedCount > 0 ? (wins / closedCount) * 100 : 50;
 
-        await supabase.from('paper_trades').insert({
-          user_id: userId,
-          symbol: pos.symbol,
-          mode: pos.mode,
-          side: pos.side,
-          size: pos.size,
-          entry_price: pos.entryPrice,
-          exit_price: exitPrice,
-          sl: pos.sl,
-          tp: pos.tp,
-          opened_at: pos.openedAt,
-          realized_pnl: realizedPnl,
-          reason: 'global_close',
-          session_date: today,
-          batch_id: pos.batchId,
-        });
-      }
-
-      await supabase.from('paper_positions').delete().eq('user_id', userId);
-
+    // Check if daily loss limit is hit - HALT TRADING
+    const isHalted = currentPnlPercent <= -riskConfig.maxDailyLossPercent;
+    
+    if (isHalted && !config.trading_halted_for_day) {
+      // Log halt event and close all positions
       await supabase.from('system_logs').insert({
         user_id: userId,
-        level: 'info',
-        source: 'execution',
-        message: `Global close: ${enginePositions.length} positions closed`,
+        level: 'error',
+        source: 'risk',
+        message: `Trading HALTED: Daily loss limit of ${riskConfig.maxDailyLossPercent}% reached (current: ${currentPnlPercent.toFixed(2)}%)`,
+        meta: { currentPnlPercent, limit: riskConfig.maxDailyLossPercent },
       });
-    }
 
-    if (takeBurstProfit) {
-      // Close burst positions only
-      const burstPositions = enginePositions.filter((p: any) => p.mode === 'burst');
-      for (const pos of burstPositions) {
+      // Close all positions on halt
+      for (const pos of (positions || [])) {
         const tick = ticks[pos.symbol];
-        const exitPrice = tick ? (pos.side === 'long' ? tick.bid : tick.ask) : pos.entryPrice;
-        const priceDiff = pos.side === 'long' ? exitPrice - pos.entryPrice : pos.entryPrice - exitPrice;
-        const realizedPnl = priceDiff * pos.size;
+        const exitPrice = tick ? (pos.side === 'long' ? tick.bid : tick.ask) : Number(pos.entry_price);
+        const priceDiff = pos.side === 'long' ? exitPrice - Number(pos.entry_price) : Number(pos.entry_price) - exitPrice;
+        const pnl = priceDiff * Number(pos.size);
 
         await supabase.from('paper_trades').insert({
-          user_id: userId,
-          symbol: pos.symbol,
-          mode: pos.mode,
-          side: pos.side,
-          size: pos.size,
-          entry_price: pos.entryPrice,
-          exit_price: exitPrice,
-          sl: pos.sl,
-          tp: pos.tp,
-          opened_at: pos.openedAt,
-          realized_pnl: realizedPnl,
-          reason: 'take_burst_profit',
-          session_date: today,
-          batch_id: pos.batchId,
+          user_id: userId, symbol: pos.symbol, mode: pos.mode, side: pos.side,
+          size: pos.size, entry_price: pos.entry_price, exit_price: exitPrice,
+          sl: pos.sl, tp: pos.tp, opened_at: pos.opened_at,
+          realized_pnl: pnl, reason: 'risk_halt', session_date: today, batch_id: pos.batch_id,
         });
-
         await supabase.from('paper_positions').delete().eq('id', pos.id);
       }
 
+      await supabase.from('paper_config').update({ trading_halted_for_day: true }).eq('user_id', userId);
+    }
+
+    // Handle global close
+    if (globalClose) {
+      const { data: allPositions } = await supabase.from('paper_positions').select('*').eq('user_id', userId).eq('closed', false);
+      for (const pos of (allPositions || [])) {
+        const tick = ticks[pos.symbol];
+        const exitPrice = tick ? (pos.side === 'long' ? tick.bid : tick.ask) : Number(pos.entry_price);
+        const priceDiff = pos.side === 'long' ? exitPrice - Number(pos.entry_price) : Number(pos.entry_price) - exitPrice;
+        const pnl = priceDiff * Number(pos.size);
+
+        await supabase.from('paper_trades').insert({
+          user_id: userId, symbol: pos.symbol, mode: pos.mode, side: pos.side,
+          size: pos.size, entry_price: pos.entry_price, exit_price: exitPrice,
+          sl: pos.sl, tp: pos.tp, opened_at: pos.opened_at,
+          realized_pnl: pnl, reason: 'global_close', session_date: today, batch_id: pos.batch_id,
+        });
+      }
+      await supabase.from('paper_positions').delete().eq('user_id', userId);
       await supabase.from('system_logs').insert({
-        user_id: userId,
-        level: 'info',
-        source: 'mode:burst',
-        message: `Take burst profit: ${burstPositions.length} positions closed`,
+        user_id: userId, level: 'info', source: 'execution',
+        message: `Global close: ${(allPositions || []).length} positions closed`,
+      });
+    }
+
+    // Handle take burst profit
+    if (takeBurstProfit) {
+      const { data: burstPositions } = await supabase.from('paper_positions').select('*').eq('user_id', userId).eq('mode', 'burst');
+      for (const pos of (burstPositions || [])) {
+        const tick = ticks[pos.symbol];
+        const exitPrice = tick ? (pos.side === 'long' ? tick.bid : tick.ask) : Number(pos.entry_price);
+        const priceDiff = pos.side === 'long' ? exitPrice - Number(pos.entry_price) : Number(pos.entry_price) - exitPrice;
+        const pnl = priceDiff * Number(pos.size);
+
+        await supabase.from('paper_trades').insert({
+          user_id: userId, symbol: pos.symbol, mode: pos.mode, side: pos.side,
+          size: pos.size, entry_price: pos.entry_price, exit_price: exitPrice,
+          sl: pos.sl, tp: pos.tp, opened_at: pos.opened_at,
+          realized_pnl: pnl, reason: 'take_burst_profit', session_date: today, batch_id: pos.batch_id,
+        });
+        await supabase.from('paper_positions').delete().eq('id', pos.id);
+      }
+      await supabase.from('system_logs').insert({
+        user_id: userId, level: 'info', source: 'burst',
+        message: `Take burst profit: ${(burstPositions || []).length} burst positions closed`,
       });
     }
 
     // Update burst requested flag
     if (burstRequested !== undefined) {
-      await supabase
-        .from('paper_config')
-        .update({ burst_requested: burstRequested })
-        .eq('user_id', userId);
+      await supabase.from('paper_config').update({ burst_requested: burstRequested }).eq('user_id', userId);
       config.burst_requested = burstRequested;
+      if (burstRequested) {
+        await supabase.from('system_logs').insert({
+          user_id: userId, level: 'info', source: 'burst',
+          message: `Burst mode activated - preparing ${burstConfig.size} micro-positions`,
+        });
+      }
     }
 
-    // Simplified engine run inline (to avoid Deno import issues)
-    const riskConfig = config.risk_config || DEFAULT_RISK_CONFIG;
-    const burstConfig = config.burst_config || DEFAULT_BURST_CONFIG;
-    const modeConfig = config.mode_config || DEFAULT_MODE_CONFIG;
-    const marketConfig = config.market_config || DEFAULT_MARKET_CONFIG;
+    // Re-fetch positions after closures
+    const { data: currentPositions } = await supabase.from('paper_positions').select('*').eq('user_id', userId).eq('closed', false);
 
-    // Re-fetch positions after any closures
-    const { data: currentPositions } = await supabase
-      .from('paper_positions')
-      .select('*')
-      .eq('user_id', userId)
-      .eq('closed', false);
-
-    const { data: currentTrades } = await supabase
-      .from('paper_trades')
-      .select('*')
-      .eq('user_id', userId)
-      .eq('session_date', today);
-
-    // Mark to market
-    const markedPositions = (currentPositions || []).map((pos: any) => {
-      const tick = ticks[pos.symbol];
-      if (!tick) return pos;
-      const currentPrice = pos.side === 'long' ? tick.bid : tick.ask;
-      const priceDiff = pos.side === 'long' 
-        ? currentPrice - Number(pos.entry_price)
-        : Number(pos.entry_price) - currentPrice;
-      return { ...pos, unrealized_pnl: priceDiff * Number(pos.size) };
-    });
-
-    // Update unrealized PnL
-    for (const pos of markedPositions) {
-      await supabase
-        .from('paper_positions')
-        .update({ unrealized_pnl: pos.unrealized_pnl })
-        .eq('id', pos.id);
-    }
-
-    // Check SL/TP exits
-    for (const pos of markedPositions) {
+    // Mark positions to market and check SL/TP
+    for (const pos of (currentPositions || [])) {
       const tick = ticks[pos.symbol];
       if (!tick) continue;
 
       const currentPrice = pos.side === 'long' ? tick.bid : tick.ask;
+      const priceDiff = pos.side === 'long' ? currentPrice - Number(pos.entry_price) : Number(pos.entry_price) - currentPrice;
+      const unrealizedPnl = priceDiff * Number(pos.size);
+
+      await supabase.from('paper_positions').update({ unrealized_pnl: unrealizedPnl }).eq('id', pos.id);
+
+      // Check SL/TP exits
       let closeReason: string | null = null;
       let exitPrice = currentPrice;
 
       if (pos.sl) {
-        if (pos.side === 'long' && tick.bid <= Number(pos.sl)) {
-          closeReason = 'sl_hit';
-          exitPrice = Number(pos.sl);
-        } else if (pos.side === 'short' && tick.ask >= Number(pos.sl)) {
-          closeReason = 'sl_hit';
-          exitPrice = Number(pos.sl);
-        }
+        if (pos.side === 'long' && tick.bid <= Number(pos.sl)) { closeReason = 'sl_hit'; exitPrice = Number(pos.sl); }
+        else if (pos.side === 'short' && tick.ask >= Number(pos.sl)) { closeReason = 'sl_hit'; exitPrice = Number(pos.sl); }
       }
-
       if (!closeReason && pos.tp) {
-        if (pos.side === 'long' && tick.bid >= Number(pos.tp)) {
-          closeReason = 'tp_hit';
-          exitPrice = Number(pos.tp);
-        } else if (pos.side === 'short' && tick.ask <= Number(pos.tp)) {
-          closeReason = 'tp_hit';
-          exitPrice = Number(pos.tp);
-        }
+        if (pos.side === 'long' && tick.bid >= Number(pos.tp)) { closeReason = 'tp_hit'; exitPrice = Number(pos.tp); }
+        else if (pos.side === 'short' && tick.ask <= Number(pos.tp)) { closeReason = 'tp_hit'; exitPrice = Number(pos.tp); }
       }
 
       if (closeReason) {
-        const priceDiff = pos.side === 'long'
-          ? exitPrice - Number(pos.entry_price)
-          : Number(pos.entry_price) - exitPrice;
-        const realizedPnl = priceDiff * Number(pos.size);
+        const finalPriceDiff = pos.side === 'long' ? exitPrice - Number(pos.entry_price) : Number(pos.entry_price) - exitPrice;
+        const realizedPnl = finalPriceDiff * Number(pos.size);
 
         await supabase.from('paper_trades').insert({
-          user_id: userId,
-          symbol: pos.symbol,
-          mode: pos.mode,
-          side: pos.side,
-          size: pos.size,
-          entry_price: pos.entry_price,
-          exit_price: exitPrice,
-          sl: pos.sl,
-          tp: pos.tp,
-          opened_at: pos.opened_at,
-          realized_pnl: realizedPnl,
-          reason: closeReason,
-          session_date: today,
-          batch_id: pos.batch_id,
+          user_id: userId, symbol: pos.symbol, mode: pos.mode, side: pos.side,
+          size: pos.size, entry_price: pos.entry_price, exit_price: exitPrice,
+          sl: pos.sl, tp: pos.tp, opened_at: pos.opened_at,
+          realized_pnl: realizedPnl, reason: closeReason, session_date: today, batch_id: pos.batch_id,
         });
-
         await supabase.from('paper_positions').delete().eq('id', pos.id);
 
         await supabase.from('system_logs').insert({
           user_id: userId,
-          level: realizedPnl >= 0 ? 'info' : 'warning',
-          source: `mode:${pos.mode}`,
-          message: `${pos.symbol} ${pos.side} closed: ${closeReason} | P&L: ${realizedPnl >= 0 ? '+' : ''}$${realizedPnl.toFixed(2)}`,
-          meta: { pnl: realizedPnl },
+          level: realizedPnl >= 0 ? 'info' : 'warn',
+          source: `execution`,
+          message: `${pos.symbol} ${pos.side.toUpperCase()} closed: ${closeReason} | P&L: ${realizedPnl >= 0 ? '+' : ''}$${realizedPnl.toFixed(2)}`,
+          meta: { pnl: realizedPnl, mode: pos.mode },
         });
       }
     }
 
-    // Calculate stats
-    const { data: finalPositions } = await supabase
-      .from('paper_positions')
-      .select('*')
-      .eq('user_id', userId)
-      .eq('closed', false);
+    // ===== RUN TRADING MODES (only if not halted) =====
+    const { data: finalPositions } = await supabase.from('paper_positions').select('*').eq('user_id', userId).eq('closed', false);
+    const { data: finalTrades } = await supabase.from('paper_trades').select('*').eq('user_id', userId).eq('session_date', today);
+    
+    // Recalculate stats
+    const finalRealizedPnl = (finalTrades || []).reduce((sum: number, t: any) => sum + Number(t.realized_pnl), 0);
+    const finalUnrealizedPnl = (finalPositions || []).reduce((sum: number, p: any) => sum + Number(p.unrealized_pnl || 0), 0);
+    const finalTodayPnl = finalRealizedPnl + finalUnrealizedPnl;
+    const finalTodayPnlPercent = startingEquity > 0 ? (finalTodayPnl / startingEquity) * 100 : 0;
+    const finalClosedCount = (finalTrades || []).length;
+    const finalWins = (finalTrades || []).filter((t: any) => Number(t.realized_pnl) > 0).length;
+    const finalWinRate = finalClosedCount > 0 ? (finalWins / finalClosedCount) * 100 : 50;
 
-    const { data: finalTrades } = await supabase
-      .from('paper_trades')
-      .select('*')
-      .eq('user_id', userId)
-      .eq('session_date', today);
+    // Check if should run modes
+    const shouldRunModes = !isHalted && !config.trading_halted_for_day && !globalClose && !takeBurstProfit;
+    
+    if (shouldRunModes && modeConfig.enabledModes && modeConfig.enabledModes.length > 0) {
+      // Calculate current risk exposure
+      const currentRiskExposure = (finalPositions || []).reduce((sum: number, p: any) => {
+        const posValue = Number(p.size) * Number(p.entry_price);
+        return sum + (posValue / startingEquity) * 100;
+      }, 0);
+      
+      const remainingRiskCapacity = riskConfig.maxConcurrentRiskPercent - currentRiskExposure;
+      const availableSlots = (riskConfig.maxOpenTrades || 20) - (finalPositions || []).length;
 
-    const realizedPnl = (finalTrades || []).reduce((sum: number, t: any) => sum + Number(t.realized_pnl), 0);
-    const unrealizedPnl = (finalPositions || []).reduce((sum: number, p: any) => sum + Number(p.unrealized_pnl || 0), 0);
-    const todayPnl = realizedPnl + unrealizedPnl;
-    const todayPnlPercent = startingEquity > 0 ? (todayPnl / startingEquity) * 100 : 0;
+      if (remainingRiskCapacity > 0 && availableSlots > 0) {
+        // Build engine context
+        const ctx: EngineContext = {
+          selectedSymbols: marketConfig.selectedSymbols || [],
+          ticks,
+          equity: startingEquity + finalTodayPnl,
+          winRate: finalWinRate,
+          recentTrades: finalTrades || [],
+          modeSettings: modeConfig.modeSettings || {},
+          burstConfig,
+          burstRequested: config.burst_requested,
+        };
 
-    const closedCount = (finalTrades || []).length;
-    const wins = (finalTrades || []).filter((t: any) => Number(t.realized_pnl) > 0).length;
-    const winRate = closedCount > 0 ? (wins / closedCount) * 100 : 0;
+        // Check burst lock status
+        const burstTrades = (finalTrades || []).filter((t: any) => t.mode === 'burst');
+        const burstPnl = burstTrades.reduce((sum: number, t: any) => sum + Number(t.realized_pnl), 0);
+        const burstPnlPercent = startingEquity > 0 ? (burstPnl / startingEquity) * 100 : 0;
+        const burstLocked = burstPnlPercent >= burstConfig.dailyProfitTargetPercent;
 
-    const burstTrades = (finalTrades || []).filter((t: any) => t.mode === 'burst');
+        // Run enabled modes
+        const allProposedOrders: ProposedOrder[] = [];
+        
+        for (const mode of modeConfig.enabledModes as TradingMode[]) {
+          // Skip burst if locked
+          if (mode === 'burst' && burstLocked) {
+            if (config.burst_requested) {
+              await supabase.from('system_logs').insert({
+                user_id: userId, level: 'info', source: 'burst',
+                message: `Burst mode locked: Daily profit target of ${burstConfig.dailyProfitTargetPercent}% reached`,
+              });
+            }
+            continue;
+          }
+
+          const runner = MODE_RUNNERS[mode];
+          if (!runner) continue;
+
+          try {
+            const orders = runner(ctx);
+            allProposedOrders.push(...orders);
+          } catch (err) {
+            console.error(`Mode ${mode} error:`, err);
+          }
+        }
+
+        // Apply risk guardrails and open positions
+        let usedRisk = 0;
+        let openedCount = 0;
+        const openedByMode: Record<string, number> = {};
+
+        for (const order of allProposedOrders) {
+          if (openedCount >= availableSlots) break;
+          
+          const orderRisk = (order.size * order.entryPrice / startingEquity) * 100;
+          if (usedRisk + orderRisk > remainingRiskCapacity) continue;
+
+          // Check per-symbol limit
+          const symbolPositions = (finalPositions || []).filter((p: any) => p.symbol === order.symbol).length;
+          const maxPerSymbol = Math.ceil((riskConfig.maxPerSymbolExposure || 30) / 5);
+          if (symbolPositions >= maxPerSymbol) continue;
+
+          // Open position
+          await supabase.from('paper_positions').insert({
+            user_id: userId,
+            symbol: order.symbol,
+            mode: order.mode,
+            side: order.side,
+            size: order.size,
+            entry_price: order.entryPrice,
+            sl: order.sl,
+            tp: order.tp,
+            batch_id: order.batchId,
+            unrealized_pnl: 0,
+          });
+
+          usedRisk += orderRisk;
+          openedCount++;
+          openedByMode[order.mode] = (openedByMode[order.mode] || 0) + 1;
+        }
+
+        // Log opened positions by mode
+        for (const [mode, count] of Object.entries(openedByMode)) {
+          await supabase.from('system_logs').insert({
+            user_id: userId,
+            level: 'info',
+            source: mode === 'burst' ? 'burst' : 'execution',
+            message: `[${mode.toUpperCase()}] Opened ${count} position(s)`,
+            meta: { count, mode },
+          });
+        }
+
+        // Reset burst flag after burst executes
+        if (config.burst_requested && openedByMode['burst']) {
+          await supabase.from('paper_config').update({ burst_requested: false }).eq('user_id', userId);
+        }
+      } else if (remainingRiskCapacity <= 0) {
+        await supabase.from('system_logs').insert({
+          user_id: userId, level: 'warn', source: 'risk',
+          message: `Max concurrent risk reached (${currentRiskExposure.toFixed(1)}%) - no new positions`,
+        });
+      }
+    }
+
+    // Final stats calculation
+    const { data: endPositions } = await supabase.from('paper_positions').select('*').eq('user_id', userId).eq('closed', false);
+    const { data: endTrades } = await supabase.from('paper_trades').select('*').eq('user_id', userId).eq('session_date', today);
+
+    const endRealizedPnl = (endTrades || []).reduce((sum: number, t: any) => sum + Number(t.realized_pnl), 0);
+    const endUnrealizedPnl = (endPositions || []).reduce((sum: number, p: any) => sum + Number(p.unrealized_pnl || 0), 0);
+    const endTodayPnl = endRealizedPnl + endUnrealizedPnl;
+    const endTodayPnlPercent = startingEquity > 0 ? (endTodayPnl / startingEquity) * 100 : 0;
+    const endClosedCount = (endTrades || []).length;
+    const endWins = (endTrades || []).filter((t: any) => Number(t.realized_pnl) > 0).length;
+    const endWinRate = endClosedCount > 0 ? (endWins / endClosedCount) * 100 : 0;
+
+    // Calculate avg R:R
+    const profitTrades = (endTrades || []).filter((t: any) => Number(t.realized_pnl) > 0);
+    const lossTrades = (endTrades || []).filter((t: any) => Number(t.realized_pnl) < 0);
+    const avgWin = profitTrades.length > 0 ? profitTrades.reduce((s: number, t: any) => s + Number(t.realized_pnl), 0) / profitTrades.length : 0;
+    const avgLoss = lossTrades.length > 0 ? Math.abs(lossTrades.reduce((s: number, t: any) => s + Number(t.realized_pnl), 0) / lossTrades.length) : 1;
+    const avgRR = avgLoss > 0 ? avgWin / avgLoss : 0;
+
+    // Burst stats
+    const burstTrades = (endTrades || []).filter((t: any) => t.mode === 'burst');
     const burstPnl = burstTrades.reduce((sum: number, t: any) => sum + Number(t.realized_pnl), 0);
     const burstPnlPercent = startingEquity > 0 ? (burstPnl / startingEquity) * 100 : 0;
-
-    const burstPositions = (finalPositions || []).filter((p: any) => p.mode === 'burst');
-    const burstStatus = burstPositions.length > 0 
-      ? 'running' 
-      : burstPnlPercent >= burstConfig.dailyProfitTargetPercent ? 'locked' : 'idle';
+    const burstPositions = (endPositions || []).filter((p: any) => p.mode === 'burst');
+    const burstStatus = burstPositions.length > 0 ? 'running' : burstPnlPercent >= burstConfig.dailyProfitTargetPercent ? 'locked' : 'idle';
 
     // Update daily stats
     await supabase.from('paper_stats_daily').upsert({
-      user_id: userId,
-      trade_date: today,
-      equity_start: startingEquity,
-      equity_end: startingEquity + todayPnl,
-      pnl: todayPnl,
-      win_rate: winRate,
-      trades_count: closedCount,
+      user_id: userId, trade_date: today,
+      equity_start: startingEquity, equity_end: startingEquity + endTodayPnl,
+      pnl: endTodayPnl, win_rate: endWinRate, trades_count: endClosedCount,
     }, { onConflict: 'user_id,trade_date' });
 
     // Update account equity
-    await supabase
-      .from('accounts')
-      .update({ equity: startingEquity + todayPnl })
-      .eq('user_id', userId)
-      .eq('type', 'paper');
+    await supabase.from('accounts').update({ equity: startingEquity + endTodayPnl }).eq('user_id', userId).eq('type', 'paper');
 
     const stats = {
-      equity: startingEquity + todayPnl,
-      todayPnl,
-      todayPnlPercent,
-      winRate,
-      avgRR: 1.5,
-      tradesToday: closedCount,
+      equity: startingEquity + endTodayPnl,
+      todayPnl: endTodayPnl,
+      todayPnlPercent: endTodayPnlPercent,
+      winRate: endWinRate,
+      avgRR: avgRR,
+      tradesToday: endClosedCount,
       maxDrawdown: 0,
-      openPositionsCount: (finalPositions || []).length,
+      openPositionsCount: (endPositions || []).length,
       burstPnlToday: burstPnlPercent,
       burstsToday: new Set(burstTrades.map((t: any) => t.batch_id).filter(Boolean)).size,
       burstStatus,
@@ -407,10 +742,10 @@ serve(async (req) => {
 
     return new Response(JSON.stringify({
       stats,
-      positions: finalPositions,
-      trades: finalTrades,
+      positions: endPositions,
+      trades: endTrades,
       ticks,
-      halted: todayPnlPercent <= -riskConfig.maxDailyLossPercent,
+      halted: isHalted || config.trading_halted_for_day,
     }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });
