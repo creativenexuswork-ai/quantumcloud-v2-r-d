@@ -7,17 +7,13 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { useAuth } from '@/hooks/useAuth';
-import { useFullSessionState } from '@/hooks/useSessionState';
+import { useSessionMachine, STATUS_COLORS } from '@/lib/state/sessionMachine';
 import { toast } from '@/hooks/use-toast';
+import { cn } from '@/lib/utils';
 
 export function Header() {
   const { user, signOut } = useAuth();
-  const { 
-    accountType, 
-    setAccountType, 
-    status, 
-    selectedMode,
-  } = useFullSessionState();
+  const { accountType, setAccountType, status, mode } = useSessionMachine();
 
   const handleLiveClick = () => {
     if (accountType === 'live') return;
@@ -35,33 +31,35 @@ export function Header() {
     switch (status) {
       case 'running': return 'status-running';
       case 'holding': return 'status-paused';
+      case 'arming': return 'status-paused';
+      case 'error': return 'status-error';
       case 'stopped': return 'status-idle';
       default: return 'status-idle';
     }
   };
 
-  const formatModeName = (mode: string) => {
-    return mode.charAt(0).toUpperCase() + mode.slice(1).replace('-', ' ');
+  const formatModeName = (m: string) => {
+    return m.charAt(0).toUpperCase() + m.slice(1).replace('-', ' ');
   };
 
   return (
     <header className="sticky top-0 z-50 border-b border-border/50 bg-background/80 backdrop-blur-xl">
-      <div className="container mx-auto px-4">
-        <div className="flex h-14 items-center justify-between">
+      <div className="container mx-auto px-3">
+        <div className="flex h-12 items-center justify-between">
           {/* Left - Brand */}
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2">
             <div className="relative">
-              <Zap className="h-6 w-6 text-primary" />
+              <Zap className="h-5 w-5 text-primary" />
               <div className="absolute inset-0 blur-lg bg-primary/30" />
             </div>
-            <div className="flex items-center gap-2">
-              <span className="text-lg font-bold text-foreground">QuantumCloud</span>
-              <span className="text-lg font-bold text-gradient">V2</span>
+            <div className="flex items-center gap-1.5">
+              <span className="text-base font-bold text-foreground">QuantumCloud</span>
+              <span className="text-base font-bold text-gradient">V2</span>
             </div>
           </div>
 
           {/* Center - Account & Mode Summary */}
-          <div className="hidden md:flex items-center gap-2 text-sm text-muted-foreground">
+          <div className="hidden md:flex items-center gap-2 text-xs text-muted-foreground">
             <span>Account:</span>
             <span className="font-medium text-foreground">
               {accountType === 'paper' ? 'PAPER' : 'LIVE'}
@@ -69,14 +67,14 @@ export function Header() {
             <span className="text-border">•</span>
             <span>Mode:</span>
             <span className="font-medium text-foreground">
-              {formatModeName(selectedMode)}
+              {formatModeName(mode)}
             </span>
           </div>
 
           {/* Right - Account Pills, Status & User */}
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2">
             {/* Account Type Pills */}
-            <div className="flex items-center gap-1 p-1 rounded-full bg-muted/30">
+            <div className="flex items-center gap-1 p-0.5 rounded-full bg-muted/30">
               <button
                 onClick={handlePaperClick}
                 className={accountType === 'paper' ? 'pill-active' : 'pill-inactive'}
@@ -92,15 +90,15 @@ export function Header() {
             </div>
 
             {/* Status Pill */}
-            <div className={`status-pill ${getStatusColor()}`}>
+            <div className={cn("status-pill", getStatusColor())}>
               {status.charAt(0).toUpperCase() + status.slice(1)}
             </div>
 
             {/* User Menu */}
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <Button variant="ghost" size="icon" className="rounded-full">
-                  <User className="h-5 w-5" />
+                <Button variant="ghost" size="icon" className="rounded-full h-8 w-8">
+                  <User className="h-4 w-4" />
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="bg-card border-border">
