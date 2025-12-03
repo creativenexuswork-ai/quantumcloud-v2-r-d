@@ -21,10 +21,10 @@ export function MarketViewPanel() {
   const isPositive = tick ? tick.changePercent24h >= 0 : true;
 
   return (
-    <div className="glass-panel p-6 h-full flex flex-col">
+    <div className="glass-panel p-4 h-full flex flex-col">
       {/* Header */}
-      <div className="flex items-center justify-between mb-4">
-        <h2 className="text-lg font-semibold text-foreground">Market Overview</h2>
+      <div className="flex items-center justify-between mb-3">
+        <h3 className="text-sm font-semibold text-foreground uppercase tracking-wide">Market</h3>
         
         {tick && (
           <div className="flex items-center gap-4 text-sm">
@@ -50,7 +50,7 @@ export function MarketViewPanel() {
       </div>
 
       {/* Chart Area */}
-      <div className="flex-1 min-h-[300px] rounded-xl bg-muted/20 chart-grid relative overflow-hidden">
+      <div className="flex-1 min-h-[200px] rounded-lg bg-muted/20 chart-grid relative overflow-hidden">
         {isLoading ? (
           <div className="absolute inset-0 flex items-center justify-center">
             <Activity className="h-8 w-8 text-muted-foreground animate-pulse" />
@@ -120,28 +120,28 @@ export function MarketViewPanel() {
 
       {/* Bottom Stats */}
       {tick && (
-        <div className="mt-4 grid grid-cols-4 gap-4">
+        <div className="mt-3 grid grid-cols-4 gap-3">
           <div>
-            <p className="metric-label">Last Price</p>
-            <p className="font-mono text-lg font-semibold text-foreground">
+            <p className="metric-label">Last</p>
+            <p className="font-mono text-sm font-semibold text-foreground">
               ${formatPrice(tick.price)}
             </p>
           </div>
           <div>
-            <p className="metric-label">24h High</p>
-            <p className="font-mono text-lg font-medium text-muted-foreground">
+            <p className="metric-label">High</p>
+            <p className="font-mono text-sm font-medium text-muted-foreground">
               ${formatPrice(tick.high24h)}
             </p>
           </div>
           <div>
-            <p className="metric-label">24h Low</p>
-            <p className="font-mono text-lg font-medium text-muted-foreground">
+            <p className="metric-label">Low</p>
+            <p className="font-mono text-sm font-medium text-muted-foreground">
               ${formatPrice(tick.low24h)}
             </p>
           </div>
           <div>
-            <p className="metric-label">Volume</p>
-            <p className="font-mono text-lg font-medium text-muted-foreground">
+            <p className="metric-label">Vol</p>
+            <p className="font-mono text-sm font-medium text-muted-foreground">
               {formatVolume(tick.volume24h)}
             </p>
           </div>
