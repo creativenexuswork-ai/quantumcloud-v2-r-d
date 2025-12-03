@@ -60,8 +60,8 @@ export default function Dashboard() {
             </button>
           </div>
         ) : (
-          <div className="space-y-3 animate-fade-in">
-            {/* Cockpit - Always visible without scroll on mobile */}
+          <div className="space-y-2 animate-fade-in">
+            {/* Cockpit - Compact, fits on mobile viewport */}
             <CockpitPanel />
 
             {/* Main Grid - Chart & Settings */}

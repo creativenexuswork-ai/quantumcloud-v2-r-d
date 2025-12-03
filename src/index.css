@@ -246,10 +246,13 @@
      ======================================== */
 
   .cockpit-panel {
-    @apply rounded-xl p-3 space-y-2;
-    background: hsl(var(--card) / 0.6);
+    @apply rounded-xl p-2.5 space-y-1.5;
+    background: linear-gradient(135deg, hsl(var(--card) / 0.8), hsl(var(--card) / 0.6));
     backdrop-filter: blur(12px);
     border: 1px solid hsl(var(--border) / 0.3);
+    box-shadow: 
+      0 2px 12px hsl(var(--primary) / 0.05),
+      inset 0 1px 0 hsl(var(--foreground) / 0.02);
   }
 
   /* Ticker Strip */
@@ -280,10 +283,10 @@
 
   /* Mode Pills */
   .mode-row {
-    @apply flex gap-2;
+    @apply flex gap-1.5;
   }
   .mode-pill {
-    @apply flex-1 flex items-center justify-center gap-1.5 py-2 px-3 rounded-lg text-xs font-semibold uppercase tracking-wide transition-all;
+    @apply flex-1 flex items-center justify-center gap-1 py-1.5 px-2 rounded-md text-[11px] font-semibold uppercase tracking-wide transition-all;
     background: hsl(var(--muted) / 0.3);
     border: 1px solid hsl(var(--border) / 0.3);
     color: hsl(var(--muted-foreground));
@@ -296,10 +299,10 @@
     background: hsl(var(--primary) / 0.15);
     border-color: hsl(var(--primary) / 0.5);
     color: hsl(var(--primary));
-    box-shadow: 0 0 12px hsl(var(--primary) / 0.2);
+    box-shadow: 0 0 10px hsl(var(--primary) / 0.25);
   }
   .mode-pill:disabled {
-    @apply cursor-not-allowed;
+    @apply opacity-50 cursor-not-allowed;
   }
 
   /* AI Status Line */
@@ -325,11 +328,11 @@
     @apply grid grid-cols-2 gap-1.5;
   }
   .ctrl-btn {
-    @apply flex items-center justify-center gap-1.5 py-2.5 px-3 rounded-lg text-xs font-bold uppercase tracking-wide transition-all;
+    @apply flex items-center justify-center gap-1 py-2 px-2 rounded-md text-[11px] font-bold uppercase tracking-wide transition-all;
     border: 1px solid transparent;
   }
   .ctrl-btn:disabled {
-    @apply opacity-40 cursor-not-allowed;
+    @apply opacity-35 cursor-not-allowed pointer-events-none;
   }
 
   .ctrl-btn-primary {
