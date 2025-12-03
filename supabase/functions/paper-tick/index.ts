@@ -70,10 +70,13 @@ interface EngineContext {
 }
 
 function detectTrend(tick: PriceTick): 'up' | 'down' | 'neutral' {
-  if (tick.regime === 'trend') {
-    return tick.volatility && tick.volatility > 0.5 ? 'up' : 'down';
+  // More permissive trend detection - allow trading in most regimes
+  if (tick.regime === 'low_vol') {
+    return 'neutral'; // Only skip low volatility
   }
-  return 'neutral';
+  // Use volatility to determine direction
+  const vol = tick.volatility ?? 0.5;
+  return vol > 0.5 ? 'up' : 'down';
 }
 
 function calculateSize(equity: number, riskPercent: number, price: number, slDistance: number): number {
@@ -90,18 +93,28 @@ function runSniperMode(ctx: EngineContext): ProposedOrder[] {
   const orders: ProposedOrder[] = [];
   const riskPct = ctx.modeSettings?.sniper?.riskPerTrade ?? 0.5;
   
+  console.log(`[SNIPER] symbols=${ctx.selectedSymbols.length}, equity=${ctx.equity}`);
+  
   for (const symbol of ctx.selectedSymbols) {
     const tick = ctx.ticks[symbol];
-    if (!tick) continue;
-    // Sniper now works on trend or range regimes
-    if (tick.regime !== 'trend' && tick.regime !== 'range') continue;
+    if (!tick) {
+      console.log(`[SNIPER] No tick for ${symbol}`);
+      continue;
+    }
+    
+    // Skip only low_vol regime
+    if (tick.regime === 'low_vol') {
+      console.log(`[SNIPER] Skipping ${symbol} - low_vol regime`);
+      continue;
+    }
     
     const trend = detectTrend(tick);
-    // Allow sniper to trade even in neutral by picking a random direction
     const side: Side = trend !== 'neutral' ? (trend === 'up' ? 'long' : 'short') : (Math.random() > 0.5 ? 'long' : 'short');
     const slDistance = tick.mid * 0.015;
     const tpDistance = tick.mid * 0.03;
     const size = calculateSize(ctx.equity, riskPct, tick.mid, slDistance);
+    
+    console.log(`[SNIPER] ${symbol}: regime=${tick.regime}, trend=${trend}, side=${side}, size=${size}`);
     
     orders.push({
       symbol, side, size,
@@ -113,42 +126,64 @@ function runSniperMode(ctx: EngineContext): ProposedOrder[] {
       confidence: 0.75
     });
   }
+  
+  console.log(`[SNIPER] Generated ${orders.length} orders`);
   return orders.slice(0, 2);
 }
 
 function runBurstMode(ctx: EngineContext): ProposedOrder[] {
-  if (!ctx.burstRequested) return [];
+  console.log(`[BURST] burstRequested=${ctx.burstRequested}, symbols=${ctx.selectedSymbols.length}`);
+  
+  if (!ctx.burstRequested) {
+    console.log('[BURST] Skipping - burst not requested');
+    return [];
+  }
   
   const orders: ProposedOrder[] = [];
   const burstSize = ctx.burstConfig?.size ?? 20;
   const totalRisk = ctx.burstConfig?.riskPerBurstPercent ?? 2;
   const riskPerTrade = totalRisk / burstSize;
   
-  // Pick the best symbol for burst - accept any regime except low_vol
+  console.log(`[BURST] Config: size=${burstSize}, totalRisk=${totalRisk}, riskPerTrade=${riskPerTrade}`);
+  
+  // Pick the best symbol for burst - accept any regime
   let bestSymbol: string | null = null;
   let bestScore = 0;
   
   for (const symbol of ctx.selectedSymbols) {
     const tick = ctx.ticks[symbol];
-    if (!tick) continue;
+    if (!tick) {
+      console.log(`[BURST] No tick for ${symbol}`);
+      continue;
+    }
     // Accept all regimes for burst
     const score = (tick.volatility ?? 0.5) * (tick.regime === 'trend' ? 1.5 : tick.regime === 'high_vol' ? 1.3 : 1);
+    console.log(`[BURST] ${symbol}: regime=${tick.regime}, vol=${tick.volatility}, score=${score}`);
     if (score > bestScore) { bestScore = score; bestSymbol = symbol; }
   }
   
   // Fallback to first symbol if none found
   if (!bestSymbol && ctx.selectedSymbols.length > 0) {
     bestSymbol = ctx.selectedSymbols[0];
+    console.log(`[BURST] Using fallback symbol: ${bestSymbol}`);
   }
   
-  if (!bestSymbol || !ctx.ticks[bestSymbol]) return [];
+  if (!bestSymbol) {
+    console.log('[BURST] No symbol available');
+    return [];
+  }
   
   const tick = ctx.ticks[bestSymbol];
+  if (!tick) {
+    console.log(`[BURST] No tick data for ${bestSymbol}`);
+    return [];
+  }
+  
   const trend = detectTrend(tick);
   const side: Side = trend === 'down' ? 'short' : 'long';
   const batchId = generateBatchId();
   
-  console.log(`Burst mode: Creating ${burstSize} positions on ${bestSymbol} (${side})`);
+  console.log(`[BURST] Creating ${burstSize} positions on ${bestSymbol} (${side}), mid=${tick.mid}`);
   
   for (let i = 0; i < burstSize; i++) {
     const slDistance = tick.mid * 0.005;
@@ -167,6 +202,8 @@ function runBurstMode(ctx: EngineContext): ProposedOrder[] {
       batchId
     });
   }
+  
+  console.log(`[BURST] Generated ${orders.length} orders`);
   return orders;
 }
 
@@ -174,18 +211,28 @@ function runTrendMode(ctx: EngineContext): ProposedOrder[] {
   const orders: ProposedOrder[] = [];
   const riskPct = ctx.modeSettings?.trend?.riskPerTrade ?? 1;
   
+  console.log(`[TREND] symbols=${ctx.selectedSymbols.length}, equity=${ctx.equity}`);
+  
   for (const symbol of ctx.selectedSymbols) {
     const tick = ctx.ticks[symbol];
-    if (!tick) continue;
-    // Trend mode now works on trend or range (potential trend forming)
-    if (tick.regime !== 'trend' && tick.regime !== 'range') continue;
+    if (!tick) {
+      console.log(`[TREND] No tick for ${symbol}`);
+      continue;
+    }
+    
+    // Skip only low_vol regime
+    if (tick.regime === 'low_vol') {
+      console.log(`[TREND] Skipping ${symbol} - low_vol regime`);
+      continue;
+    }
     
     const trend = detectTrend(tick);
-    // Allow trading in neutral by using random direction
     const side: Side = trend !== 'neutral' ? (trend === 'up' ? 'long' : 'short') : (Math.random() > 0.5 ? 'long' : 'short');
     const slDistance = tick.mid * 0.01;
     const tpDistance = tick.mid * 0.02;
     const size = calculateSize(ctx.equity, riskPct, tick.mid, slDistance);
+    
+    console.log(`[TREND] ${symbol}: regime=${tick.regime}, trend=${trend}, side=${side}, size=${size}`);
     
     orders.push({
       symbol, side, size, entryPrice: tick.mid,
@@ -194,6 +241,7 @@ function runTrendMode(ctx: EngineContext): ProposedOrder[] {
       mode: 'trend', reason: `Trend entry on ${tick.regime}`, confidence: 0.7
     });
   }
+  console.log(`[TREND] Generated ${orders.length} orders`);
   return orders.slice(0, 3);
 }
 
@@ -587,7 +635,9 @@ serve(async (req) => {
     // Check if should run modes
     const shouldRunModes = !isHalted && !config.trading_halted_for_day && !globalClose && !takeBurstProfit;
     
-    if (shouldRunModes && modeConfig.enabledModes && modeConfig.enabledModes.length > 0) {
+    console.log(`[ENGINE] shouldRunModes=${shouldRunModes}, enabledModes=${JSON.stringify(modeConfig.enabledModes)}, burstRequested=${config.burst_requested}`);
+    
+    if (shouldRunModes) {
       // Calculate current risk exposure
       const currentRiskExposure = (finalPositions || []).reduce((sum: number, p: any) => {
         const posValue = Number(p.size) * Number(p.entry_price);
@@ -596,6 +646,8 @@ serve(async (req) => {
       
       const remainingRiskCapacity = riskConfig.maxConcurrentRiskPercent - currentRiskExposure;
       const availableSlots = (riskConfig.maxOpenTrades || 20) - (finalPositions || []).length;
+      
+      console.log(`[ENGINE] currentRisk=${currentRiskExposure.toFixed(2)}%, remainingCapacity=${remainingRiskCapacity.toFixed(2)}%, availableSlots=${availableSlots}`);
 
       if (remainingRiskCapacity > 0 && availableSlots > 0) {
         // Build engine context
@@ -609,6 +661,9 @@ serve(async (req) => {
           burstConfig,
           burstRequested: config.burst_requested,
         };
+        
+        console.log(`[ENGINE] Context: symbols=${ctx.selectedSymbols.join(',')}, equity=${ctx.equity}, burstRequested=${ctx.burstRequested}`);
+        console.log(`[ENGINE] Ticks available: ${Object.keys(ticks).join(',')}`);
 
         // Check burst lock status
         const burstTrades = (finalTrades || []).filter((t: any) => t.mode === 'burst');
@@ -616,12 +671,22 @@ serve(async (req) => {
         const burstPnlPercent = startingEquity > 0 ? (burstPnl / startingEquity) * 100 : 0;
         const burstLocked = burstPnlPercent >= burstConfig.dailyProfitTargetPercent;
 
+        // Determine which modes to run
+        // Always include burst if burst is requested, even if not in enabledModes
+        const modesToRun = new Set<TradingMode>(modeConfig.enabledModes as TradingMode[] || []);
+        if (config.burst_requested && !burstLocked) {
+          modesToRun.add('burst');
+        }
+        
+        console.log(`[ENGINE] Modes to run: ${Array.from(modesToRun).join(',')}, burstLocked=${burstLocked}`);
+
         // Run enabled modes
         const allProposedOrders: ProposedOrder[] = [];
         
-        for (const mode of modeConfig.enabledModes as TradingMode[]) {
+        for (const mode of modesToRun) {
           // Skip burst if locked
           if (mode === 'burst' && burstLocked) {
+            console.log(`[ENGINE] Burst mode locked (pnl=${burstPnlPercent.toFixed(2)}%)`);
             if (config.burst_requested) {
               await supabase.from('system_logs').insert({
                 user_id: userId, level: 'info', source: 'burst',
@@ -632,34 +697,53 @@ serve(async (req) => {
           }
 
           const runner = MODE_RUNNERS[mode];
-          if (!runner) continue;
+          if (!runner) {
+            console.log(`[ENGINE] No runner for mode: ${mode}`);
+            continue;
+          }
 
           try {
+            console.log(`[ENGINE] Running mode: ${mode}`);
             const orders = runner(ctx);
+            console.log(`[ENGINE] Mode ${mode} generated ${orders.length} orders`);
             allProposedOrders.push(...orders);
           } catch (err) {
-            console.error(`Mode ${mode} error:`, err);
+            console.error(`[ENGINE] Mode ${mode} error:`, err);
           }
         }
+        
+        console.log(`[ENGINE] Total proposed orders: ${allProposedOrders.length}`);
 
         // Apply risk guardrails and open positions
         let usedRisk = 0;
         let openedCount = 0;
         const openedByMode: Record<string, number> = {};
+        const blockedReasons: string[] = [];
 
         for (const order of allProposedOrders) {
-          if (openedCount >= availableSlots) break;
+          if (openedCount >= availableSlots) {
+            blockedReasons.push(`slots_exhausted`);
+            break;
+          }
           
           const orderRisk = (order.size * order.entryPrice / startingEquity) * 100;
-          if (usedRisk + orderRisk > remainingRiskCapacity) continue;
+          if (usedRisk + orderRisk > remainingRiskCapacity) {
+            blockedReasons.push(`risk_exceeded:${order.symbol}`);
+            continue;
+          }
 
-          // Check per-symbol limit
+          // Check per-symbol limit (much more permissive now)
           const symbolPositions = (finalPositions || []).filter((p: any) => p.symbol === order.symbol).length;
-          const maxPerSymbol = Math.ceil((riskConfig.maxPerSymbolExposure || 30) / 5);
-          if (symbolPositions >= maxPerSymbol) continue;
+          const maxPerSymbol = riskConfig.maxOpenTrades || 20; // Allow up to max open trades per symbol for burst
+          if (symbolPositions >= maxPerSymbol) {
+            blockedReasons.push(`symbol_limit:${order.symbol}`);
+            continue;
+          }
 
           // Open position
-          await supabase.from('paper_positions').insert({
+          console.log(`[ENGINE] Opening position: ${order.symbol} ${order.side} ${order.size} @ ${order.entryPrice}`);
+          
+          const { error: insertError } = await supabase.from('paper_positions').insert({
             user_id: userId,
             symbol: order.symbol,
             mode: order.mode,
@@ -671,11 +755,18 @@ serve(async (req) => {
             batch_id: order.batchId,
             unrealized_pnl: 0,
           });
+          
+          if (insertError) {
+            console.error(`[ENGINE] Failed to insert position:`, insertError);
+            continue;
+          }
 
           usedRisk += orderRisk;
           openedCount++;
           openedByMode[order.mode] = (openedByMode[order.mode] || 0) + 1;
         }
+        
+        console.log(`[ENGINE] Opened ${openedCount} positions, blocked reasons: ${blockedReasons.slice(0, 5).join(', ')}`);
 
         // Log opened positions by mode
         for (const [mode, count] of Object.entries(openedByMode)) {
@@ -687,17 +778,33 @@ serve(async (req) => {
             meta: { count, mode },
           });
         }
+        
+        // Log if no positions were opened but orders were proposed
+        if (openedCount === 0 && allProposedOrders.length > 0) {
+          await supabase.from('system_logs').insert({
+            user_id: userId,
+            level: 'warn',
+            source: 'risk',
+            message: `${allProposedOrders.length} orders blocked by risk limits`,
+            meta: { proposed: allProposedOrders.length, reasons: blockedReasons.slice(0, 10) },
+          });
+        }
 
         // Reset burst flag after burst executes
         if (config.burst_requested && openedByMode['burst']) {
           await supabase.from('paper_config').update({ burst_requested: false }).eq('user_id', userId);
         }
-      } else if (remainingRiskCapacity <= 0) {
-        await supabase.from('system_logs').insert({
-          user_id: userId, level: 'warn', source: 'risk',
-          message: `Max concurrent risk reached (${currentRiskExposure.toFixed(1)}%) - no new positions`,
-        });
+      } else {
+        console.log(`[ENGINE] Cannot open positions: remainingCapacity=${remainingRiskCapacity.toFixed(2)}%, availableSlots=${availableSlots}`);
+        if (remainingRiskCapacity <= 0) {
+          await supabase.from('system_logs').insert({
+            user_id: userId, level: 'warn', source: 'risk',
+            message: `Max concurrent risk reached (${currentRiskExposure.toFixed(1)}%) - no new positions`,
+          });
+        }
       }
+    } else {
+      console.log(`[ENGINE] Not running modes: isHalted=${isHalted}, tradingHalted=${config.trading_halted_for_day}, globalClose=${globalClose}, takeBurstProfit=${takeBurstProfit}`);
     }
 
     // Final stats calculation
