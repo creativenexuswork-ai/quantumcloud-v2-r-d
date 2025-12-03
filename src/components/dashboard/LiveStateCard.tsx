@@ -1,10 +1,8 @@
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Play, Square } from 'lucide-react';
-import { useTrading } from '@/context/TradingContext';
+import { Play, Square, Loader2 } from 'lucide-react';
 import { useTradingSession, usePaperStats } from '@/hooks/usePaperTrading';
-import { MODE_DEFINITIONS, ModeKey } from '@/hooks/useModeConfigs';
 
 const regimeColors: Record<string, string> = {
   trend: 'bg-success/20 text-success',
@@ -15,26 +13,17 @@ const regimeColors: Record<string, string> = {
 };
 
 export function LiveStateCard() {
-  const { tradingState, startMode, stopMode } = useTrading();
-  const { isActive, startSession, stopSession, halted, positions } = useTradingSession();
+  const { isActive, startSession, stopSession, halted, tickInFlight } = useTradingSession();
   const { data: paperData } = usePaperStats();
   
-  const { activeMode, activeSymbol, regime, status } = tradingState;
-  const modeInfo = activeMode ? MODE_DEFINITIONS[activeMode as ModeKey] : null;
-  const openPositions = paperData?.stats?.openPositionsCount || positions.length;
+  const config = paperData?.config;
+  const enabledModes = config?.mode_config?.enabledModes || [];
+  const selectedSymbols = config?.market_config?.selectedSymbols || [];
+  const openPositions = paperData?.stats?.openPositionsCount || 0;
 
-  const handleStart = () => {
-    if (halted) return;
-    startSession();
-    if (activeSymbol) {
-      startMode('quantum', activeSymbol);
-    }
-  };
-
-  const handleStop = () => {
-    stopSession();
-    stopMode();
-  };
+  // Determine primary mode and symbol for display
+  const activeMode = enabledModes[0] || null;
+  const activeSymbol = selectedSymbols[0] || 'BTCUSDT';
 
   return (
     <Card className="glass-card">
@@ -49,47 +38,31 @@ export function LiveStateCard() {
       <CardContent className="space-y-4">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
-            {modeInfo && (
-              <>
-                <span className="text-2xl">{modeInfo.icon}</span>
-                <div>
-                  <p className="font-medium">{modeInfo.name}</p>
-                  <Badge variant="outline" className={`text-xs ${
-                    modeInfo.risk === 'Safe' ? 'border-success text-success' :
-                    modeInfo.risk === 'Aggressive' ? 'border-destructive text-destructive' :
-                    'border-warning text-warning'
-                  }`}>
-                    {modeInfo.risk}
-                  </Badge>
-                </div>
-              </>
-            )}
-            {!modeInfo && (
-              <p className="text-muted-foreground">No mode active</p>
+            {enabledModes.length > 0 ? (
+              <div>
+                <p className="font-medium capitalize">{enabledModes.join(', ')}</p>
+                <Badge variant="outline" className="text-xs">
+                  {enabledModes.length} mode(s) enabled
+                </Badge>
+              </div>
+            ) : (
+              <p className="text-muted-foreground">No modes enabled</p>
             )}
           </div>
           {isActive && (
             <Badge className="bg-success/20 text-success animate-pulse">
-              Session Active
+              {tickInFlight ? 'Ticking...' : 'Session Active'}
             </Badge>
           )}
         </div>
 
         <div className="space-y-2">
           <div className="flex justify-between items-center">
-            <span className="text-sm text-muted-foreground">Symbol</span>
-            <span className="font-mono font-medium">{activeSymbol || 'BTCUSDT'}</span>
-          </div>
-          
-          <div className="flex justify-between items-center">
-            <span className="text-sm text-muted-foreground">Market Regime</span>
-            {regime ? (
-              <Badge className={regimeColors[regime]}>
-                {regime.replace('_', ' ').toUpperCase()}
-              </Badge>
-            ) : (
-              <span className="text-muted-foreground text-sm">—</span>
-            )}
+            <span className="text-sm text-muted-foreground">Symbols</span>
+            <span className="font-mono font-medium text-sm">
+              {selectedSymbols.length > 0 ? selectedSymbols.slice(0, 3).join(', ') : 'None'}
+              {selectedSymbols.length > 3 && ` +${selectedSymbols.length - 3}`}
+            </span>
           </div>
 
           <div className="flex justify-between items-center">
@@ -102,31 +75,34 @@ export function LiveStateCard() {
             <span className={`text-sm font-medium ${
               isActive ? 'text-success animate-pulse' :
               halted ? 'text-destructive' :
-              status === 'error' ? 'text-destructive' :
               'text-muted-foreground'
             }`}>
-              {halted ? 'HALTED' : isActive ? 'RUNNING' : status.replace('_', ' ').toUpperCase()}
+              {halted ? 'HALTED' : isActive ? 'RUNNING' : 'IDLE'}
             </span>
           </div>
         </div>
 
-        {activeMode && (
+        {activeMode && isActive && (
           <p className="text-xs text-muted-foreground">
-            {modeInfo?.name} scanning {activeSymbol} on 5m / 15m
+            Engine running {enabledModes.length} mode(s) on {selectedSymbols.length} symbol(s)
           </p>
         )}
 
         <div className="flex gap-2 pt-2">
           <Button 
-            onClick={handleStart}
-            disabled={isActive || halted}
+            onClick={startSession}
+            disabled={isActive || halted || enabledModes.length === 0}
             className="flex-1 gap-2"
           >
-            <Play className="h-4 w-4" />
-            Start Session
+            {tickInFlight ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Play className="h-4 w-4" />
+            )}
+            {isActive ? 'Running...' : 'Start Session'}
           </Button>
           <Button 
-            onClick={handleStop}
+            onClick={stopSession}
             disabled={!isActive}
             variant="destructive"
             className="flex-1 gap-2"

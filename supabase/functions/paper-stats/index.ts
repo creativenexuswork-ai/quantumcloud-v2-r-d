@@ -16,7 +16,6 @@ serve(async (req) => {
     const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
     const supabase = createClient(supabaseUrl, supabaseKey);
 
-    // Get user from auth header
     const authHeader = req.headers.get('Authorization')?.replace('Bearer ', '');
     if (!authHeader) {
       return new Response(JSON.stringify({ error: 'Unauthorized' }), {
@@ -36,12 +35,28 @@ serve(async (req) => {
     const userId = user.id;
     const today = new Date().toISOString().split('T')[0];
 
-    // Get paper config
-    const { data: config } = await supabase
+    // Get or create paper config
+    let { data: config } = await supabase
       .from('paper_config')
       .select('*')
       .eq('user_id', userId)
       .maybeSingle();
+
+    if (!config) {
+      const { data: newConfig } = await supabase
+        .from('paper_config')
+        .insert({
+          user_id: userId,
+          risk_config: { maxDailyLossPercent: 5, maxConcurrentRiskPercent: 10 },
+          burst_config: { size: 20, dailyProfitTargetPercent: 8 },
+          mode_config: { enabledModes: ['trend'], modeSettings: {} },
+          market_config: { selectedSymbols: ['BTCUSDT', 'ETHUSDT'], typeFilters: { crypto: true, forex: true, index: true, metal: true } },
+          is_running: false,
+        })
+        .select()
+        .single();
+      config = newConfig;
+    }
 
     // Get positions
     const { data: positions } = await supabase
@@ -65,7 +80,7 @@ serve(async (req) => {
       .eq('type', 'paper')
       .maybeSingle();
 
-    // Get historical stats for equity curve
+    // Get historical stats
     const { data: historicalStats } = await supabase
       .from('paper_stats_daily')
       .select('*')
@@ -159,6 +174,7 @@ serve(async (req) => {
         burst_requested: config.burst_requested,
         use_ai_reasoning: config.use_ai_reasoning,
         show_advanced_explanations: config.show_advanced_explanations,
+        is_running: config.is_running,
       } : null,
       halted: isHalted,
     }), {
