@@ -1,225 +1,193 @@
 import { create } from 'zustand';
 
 // ============== Session State Types ==============
-export type SessionStatus = 'idle' | 'arming' | 'running' | 'holding' | 'stopped' | 'error';
+export type SessionStatus = 'idle' | 'running' | 'holding' | 'stopped' | 'error';
 export type TradingMode = 'burst' | 'scalper' | 'trend';
 export type AccountType = 'paper' | 'live';
 
 export interface SessionState {
-  // Core state
   status: SessionStatus;
   mode: TradingMode;
   accountType: AccountType;
-  
-  // Position state
   hasPositions: boolean;
   openCount: number;
-  
-  // P&L
   pnlToday: number;
-  pnlOverall: number;
-  equity: number;
   tradesToday: number;
   winRate: number;
-  
-  // Error/Risk state
-  lastError?: string;
-  riskViolated: boolean;
+  equity: number;
+  lastError: string | null;
   halted: boolean;
-  
-  // Tick state
   tickInFlight: boolean;
 }
 
-export interface SessionActions {
-  // State transitions
-  arm: (mode: TradingMode) => void;
-  start: () => void;
-  hold: () => void;
-  resume: () => void;
-  stop: () => void;
-  closeAll: () => void;
-  fail: (message: string) => void;
-  reset: () => void;
-  
-  // State updates
-  setStatus: (status: SessionStatus) => void;
-  setMode: (mode: TradingMode) => void;
-  setAccountType: (type: AccountType) => void;
-  setRiskViolated: (flag: boolean, message?: string) => void;
-  setPositionsSummary: (data: { hasPositions: boolean; openCount: number }) => void;
-  setPnL: (data: { pnlToday: number; pnlOverall?: number; equity?: number; tradesToday?: number; winRate?: number }) => void;
-  setHalted: (halted: boolean) => void;
-  setTickInFlight: (inFlight: boolean) => void;
-  
-  // Sync from backend
-  syncFromBackend: (data: {
-    sessionStatus?: SessionStatus;
-    hasPositions?: boolean;
-    openCount?: number;
-    pnlToday?: number;
-    equity?: number;
-    tradesToday?: number;
-    winRate?: number;
-    halted?: boolean;
-  }) => void;
+export interface ButtonStates {
+  canActivate: boolean;
+  canHold: boolean;
+  canTakeProfit: boolean;
+  canCloseAll: boolean;
+  canChangeMode: boolean;
 }
 
-const initialState: SessionState = {
-  status: 'idle',
-  mode: 'burst',
-  accountType: 'paper',
-  hasPositions: false,
-  openCount: 0,
-  pnlToday: 0,
-  pnlOverall: 0,
-  equity: 10000,
-  tradesToday: 0,
-  winRate: 0,
-  lastError: undefined,
-  riskViolated: false,
-  halted: false,
-  tickInFlight: false,
-};
+// ============== Pure Helper Functions ==============
 
-export const useSessionMachine = create<SessionState & SessionActions>((set, get) => ({
-  ...initialState,
-  
-  // State transitions
-  arm: (mode) => {
-    const { status } = get();
-    if (status !== 'idle' && status !== 'stopped' && status !== 'error') return;
-    set({ status: 'arming', mode, lastError: undefined, riskViolated: false });
-  },
-  
-  start: () => {
-    const { status } = get();
-    if (status !== 'arming') return;
-    set({ status: 'running' });
-  },
-  
-  hold: () => {
-    const { status } = get();
-    if (status !== 'running') return;
-    set({ status: 'holding' });
-  },
-  
-  resume: () => {
-    const { status } = get();
-    if (status !== 'holding') return;
-    set({ status: 'running' });
-  },
-  
-  stop: () => {
-    set({ status: 'stopped' });
-  },
-  
-  closeAll: () => {
-    set({ status: 'stopped', hasPositions: false, openCount: 0 });
-  },
-  
-  fail: (message) => {
-    set({ status: 'error', lastError: message });
-  },
-  
-  reset: () => {
-    set({ ...initialState, mode: get().mode, accountType: get().accountType });
-  },
-  
-  // State updates
-  setStatus: (status) => set({ status }),
-  setMode: (mode) => set({ mode }),
-  setAccountType: (type) => set({ accountType: type, status: 'idle', hasPositions: false, openCount: 0 }),
-  
-  setRiskViolated: (flag, message) => {
-    set({ riskViolated: flag, lastError: message });
-    if (flag) {
-      set({ status: 'error' });
-    }
-  },
-  
-  setPositionsSummary: ({ hasPositions, openCount }) => {
-    set({ hasPositions, openCount });
-  },
-  
-  setPnL: ({ pnlToday, pnlOverall, equity, tradesToday, winRate }) => {
-    set((state) => ({
-      pnlToday: pnlToday ?? state.pnlToday,
-      pnlOverall: pnlOverall ?? state.pnlOverall,
-      equity: equity ?? state.equity,
-      tradesToday: tradesToday ?? state.tradesToday,
-      winRate: winRate ?? state.winRate,
-    }));
-  },
-  
-  setHalted: (halted) => {
-    set({ halted });
-    if (halted) {
-      set({ status: 'idle', riskViolated: true, lastError: 'Daily loss limit reached' });
-    }
-  },
-  
-  setTickInFlight: (tickInFlight) => set({ tickInFlight }),
-  
-  // Sync from backend data
-  syncFromBackend: (data) => {
-    const updates: Partial<SessionState> = {};
-    
-    if (data.sessionStatus !== undefined) {
-      // Map backend status to our status (backend uses 'idle'|'running'|'holding'|'stopped')
-      const statusMap: Record<string, SessionStatus> = {
-        'idle': 'idle',
-        'running': 'running',
-        'holding': 'holding',
-        'stopped': 'stopped',
-      };
-      updates.status = statusMap[data.sessionStatus] || 'idle';
-    }
-    
-    if (data.hasPositions !== undefined) updates.hasPositions = data.hasPositions;
-    if (data.openCount !== undefined) updates.openCount = data.openCount;
-    if (data.pnlToday !== undefined) updates.pnlToday = data.pnlToday;
-    if (data.equity !== undefined) updates.equity = data.equity;
-    if (data.tradesToday !== undefined) updates.tradesToday = data.tradesToday;
-    if (data.winRate !== undefined) updates.winRate = data.winRate;
-    if (data.halted !== undefined) {
-      updates.halted = data.halted;
-      if (data.halted) {
-        updates.riskViolated = true;
-        updates.lastError = 'Daily loss limit reached';
-      }
-    }
-    
-    set(updates);
-  },
-}));
-
-// Helper hook for button enabled states
-export function useSessionButtons() {
-  const { status, hasPositions, tickInFlight, halted } = useSessionMachine();
-  
-  const canActivate = (status === 'idle' || status === 'stopped' || status === 'error') && !tickInFlight && !halted;
-  const canTakeProfit = hasPositions && (status === 'running' || status === 'holding') && !tickInFlight;
-  const canHold = (status === 'running' || status === 'holding') && !tickInFlight;
-  const canCloseAll = hasPositions && !tickInFlight;
-  const canChangeMode = status === 'idle' || status === 'stopped' || status === 'error';
-  
+export function getInitialSessionState(): SessionState {
   return {
-    canActivate,
-    canTakeProfit,
-    canHold,
-    canCloseAll,
-    canChangeMode,
-    isHolding: status === 'holding',
-    isRunning: status === 'running',
-    isArming: status === 'arming',
+    status: 'idle',
+    mode: 'burst',
+    accountType: 'paper',
+    hasPositions: false,
+    openCount: 0,
+    pnlToday: 0,
+    tradesToday: 0,
+    winRate: 0,
+    equity: 10000,
+    lastError: null,
+    halted: false,
+    tickInFlight: false,
   };
 }
 
-// Status display helpers
+export function getButtonStates(session: SessionState): ButtonStates {
+  const { status, hasPositions, tickInFlight, halted } = session;
+  
+  return {
+    // ACTIVATE: only when idle or stopped, not halted, not busy
+    canActivate: (status === 'idle' || status === 'stopped') && !tickInFlight && !halted,
+    
+    // HOLD: only when running (toggles to holding, or back to running)
+    canHold: (status === 'running' || status === 'holding') && !tickInFlight,
+    
+    // TAKE PROFIT: only when hasPositions AND (running OR holding)
+    canTakeProfit: hasPositions && (status === 'running' || status === 'holding') && !tickInFlight,
+    
+    // CLOSE ALL: only when hasPositions (any active state)
+    canCloseAll: hasPositions && !tickInFlight,
+    
+    // MODE CHANGE: only when idle or stopped
+    canChangeMode: status === 'idle' || status === 'stopped',
+  };
+}
+
+export type SessionAction = 
+  | { type: 'ACTIVATE' }
+  | { type: 'HOLD' }
+  | { type: 'CLOSE_ALL' }
+  | { type: 'ERROR'; error: string }
+  | { type: 'RESET' }
+  | { type: 'SET_MODE'; mode: TradingMode }
+  | { type: 'SYNC_POSITIONS'; hasPositions: boolean; openCount: number }
+  | { type: 'SYNC_PNL'; pnlToday: number; tradesToday: number; winRate: number; equity: number }
+  | { type: 'SET_HALTED'; halted: boolean }
+  | { type: 'SET_TICK_IN_FLIGHT'; tickInFlight: boolean }
+  | { type: 'SYNC_STATUS'; status: SessionStatus };
+
+export function transitionSession(state: SessionState, action: SessionAction): SessionState {
+  switch (action.type) {
+    case 'ACTIVATE':
+      // Can only activate from idle or stopped
+      if (state.status !== 'idle' && state.status !== 'stopped') {
+        return state;
+      }
+      return { ...state, status: 'running', lastError: null };
+    
+    case 'HOLD':
+      // Toggle between running and holding
+      if (state.status === 'running') {
+        return { ...state, status: 'holding' };
+      }
+      if (state.status === 'holding') {
+        return { ...state, status: 'running' };
+      }
+      return state;
+    
+    case 'CLOSE_ALL':
+      // Always goes to idle, clears positions
+      return { 
+        ...state, 
+        status: 'idle', 
+        hasPositions: false, 
+        openCount: 0 
+      };
+    
+    case 'ERROR':
+      return { 
+        ...state, 
+        status: 'error', 
+        lastError: action.error 
+      };
+    
+    case 'RESET':
+      return getInitialSessionState();
+    
+    case 'SET_MODE':
+      // Only allow mode change when idle or stopped
+      if (state.status !== 'idle' && state.status !== 'stopped') {
+        return state;
+      }
+      return { ...state, mode: action.mode };
+    
+    case 'SYNC_POSITIONS':
+      return { 
+        ...state, 
+        hasPositions: action.hasPositions, 
+        openCount: action.openCount 
+      };
+    
+    case 'SYNC_PNL':
+      return { 
+        ...state, 
+        pnlToday: action.pnlToday,
+        tradesToday: action.tradesToday,
+        winRate: action.winRate,
+        equity: action.equity,
+      };
+    
+    case 'SET_HALTED':
+      return { 
+        ...state, 
+        halted: action.halted,
+        // If halted, also set to idle
+        status: action.halted ? 'idle' : state.status,
+      };
+    
+    case 'SET_TICK_IN_FLIGHT':
+      return { ...state, tickInFlight: action.tickInFlight };
+    
+    case 'SYNC_STATUS':
+      // Only sync if it's a valid backend status
+      const validStatuses: SessionStatus[] = ['idle', 'running', 'holding', 'stopped', 'error'];
+      if (!validStatuses.includes(action.status)) {
+        return state;
+      }
+      return { ...state, status: action.status };
+    
+    default:
+      return state;
+  }
+}
+
+// ============== Zustand Store ==============
+interface SessionStore extends SessionState {
+  dispatch: (action: SessionAction) => void;
+  getButtonStates: () => ButtonStates;
+}
+
+export const useSessionStore = create<SessionStore>((set, get) => ({
+  ...getInitialSessionState(),
+  
+  dispatch: (action: SessionAction) => {
+    set((state) => transitionSession(state, action));
+  },
+  
+  getButtonStates: () => {
+    const state = get();
+    return getButtonStates(state);
+  },
+}));
+
+// ============== Status Display Helpers ==============
 export const STATUS_LABELS: Record<SessionStatus, string> = {
   idle: 'IDLE',
-  arming: 'ARMING',
   running: 'RUNNING',
   holding: 'HOLDING',
   stopped: 'STOPPED',
@@ -227,10 +195,9 @@ export const STATUS_LABELS: Record<SessionStatus, string> = {
 };
 
 export const STATUS_COLORS: Record<SessionStatus, string> = {
-  idle: 'text-muted-foreground',
-  arming: 'text-warning',
-  running: 'text-success',
-  holding: 'text-warning',
-  stopped: 'text-muted-foreground',
-  error: 'text-destructive',
+  idle: 'text-slate-400',
+  running: 'text-emerald-400',
+  holding: 'text-amber-300',
+  stopped: 'text-slate-400',
+  error: 'text-red-400',
 };

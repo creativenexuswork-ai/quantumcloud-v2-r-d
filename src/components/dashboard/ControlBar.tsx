@@ -1,6 +1,6 @@
 import { Loader2, Power, DollarSign, Pause, XCircle } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { SessionStatus } from '@/lib/state/session';
+import { SessionStatus } from '@/lib/state/sessionMachine';
 import { toast } from '@/hooks/use-toast';
 
 interface ControlBarProps {

@@ -1,39 +1,29 @@
 import { Brain, TrendingUp, Target, Gauge } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { TradingMode, SessionStatus } from '@/lib/state/sessionMachine';
+import { useSessionStore, SessionStatus } from '@/lib/state/sessionMachine';
 
 interface AIEngineStripProps {
-  selectedMode?: TradingMode;
+  selectedMode?: string;
   marketRegime?: string;
-  status?: SessionStatus;
   targetPct?: string;
   confidencePct?: number;
 }
 
-const MODE_SUGGESTIONS: Record<string, TradingMode> = {
-  'trending': 'trend',
-  'ranging': 'scalper',
-  'volatile': 'burst',
-  'choppy': 'scalper',
-};
-
 export function AIEngineStrip({ 
-  selectedMode = 'burst', 
   marketRegime = 'analysing',
-  status = 'idle',
   targetPct,
   confidencePct,
 }: AIEngineStripProps) {
+  const { status } = useSessionStore();
+  
   const regime = marketRegime.toLowerCase();
   const suggestedTp = targetPct || (regime === 'trending' ? '+2.5%' : regime === 'volatile' ? '+1.2%' : '+1.8%');
   const confidence = confidencePct ?? 78;
 
-  const getStatusBadge = () => {
-    switch (status) {
+  const getStatusBadge = (s: SessionStatus) => {
+    switch (s) {
       case 'running':
         return { label: 'Active', className: 'bg-emerald-500/20 text-emerald-300' };
-      case 'arming':
-        return { label: 'Arming', className: 'bg-amber-500/20 text-amber-300' };
       case 'holding':
         return { label: 'Holding', className: 'bg-amber-500/20 text-amber-300' };
       case 'error':
@@ -43,7 +33,7 @@ export function AIEngineStrip({
     }
   };
 
-  const statusBadge = getStatusBadge();
+  const statusBadge = getStatusBadge(status);
 
   return (
     <div className="flex items-center justify-between gap-2 text-xs text-slate-300 py-1 px-1">

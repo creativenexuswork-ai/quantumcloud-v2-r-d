@@ -7,13 +7,13 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { useAuth } from '@/hooks/useAuth';
-import { useSessionMachine, STATUS_COLORS } from '@/lib/state/sessionMachine';
+import { useSessionStore, STATUS_COLORS, STATUS_LABELS } from '@/lib/state/sessionMachine';
 import { toast } from '@/hooks/use-toast';
 import { cn } from '@/lib/utils';
 
 export function Header() {
   const { user, signOut } = useAuth();
-  const { accountType, setAccountType, status, mode } = useSessionMachine();
+  const { accountType, status, mode, dispatch } = useSessionStore();
 
   const handleLiveClick = () => {
     if (accountType === 'live') return;
@@ -24,14 +24,21 @@ export function Header() {
   };
 
   const handlePaperClick = () => {
-    setAccountType('paper');
+    // Only switch if idle or stopped
+    if (status === 'running' || status === 'holding') {
+      toast({
+        title: 'Cannot Switch',
+        description: 'Stop the session before switching account type.',
+      });
+      return;
+    }
+    // For now, paper is always selected
   };
 
   const getStatusColor = () => {
     switch (status) {
       case 'running': return 'status-running';
       case 'holding': return 'status-paused';
-      case 'arming': return 'status-paused';
       case 'error': return 'status-error';
       case 'stopped': return 'status-idle';
       default: return 'status-idle';
@@ -91,7 +98,7 @@ export function Header() {
 
             {/* Status Pill */}
             <div className={cn("status-pill", getStatusColor())}>
-              {status.charAt(0).toUpperCase() + status.slice(1)}
+              {STATUS_LABELS[status]}
             </div>
 
             {/* User Menu */}

@@ -3,8 +3,7 @@ import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Slider } from '@/components/ui/slider';
 import { useFullSessionState } from '@/hooks/useSessionState';
-import { useSessionMachine } from '@/lib/state/sessionMachine';
-import { SessionStatus, TradingMode } from '@/lib/state/sessionMachine';
+import { useSessionStore, STATUS_LABELS, STATUS_COLORS } from '@/lib/state/sessionMachine';
 import { useSessionActions } from '@/hooks/useSessionActions';
 import { cn } from '@/lib/utils';
 import { ModeSelector } from './ModeSelector';
@@ -21,8 +20,8 @@ export function ModesControlPanel() {
     tradesToday,
   } = useFullSessionState();
 
-  const { status, mode, openCount, tickInFlight } = useSessionMachine();
-  const { activateSession, toggleHold, takeProfit, closeAllPositions, changeMode } = useSessionActions();
+  const { status, mode, openCount, tickInFlight } = useSessionStore();
+  const { buttonStates, activate, holdToggle, takeProfit, closeAll, changeMode } = useSessionActions();
 
   // Only show controls for the 3 core modes
   const showBurstScalperControls = mode === 'burst' || mode === 'scalper';
@@ -48,17 +47,19 @@ export function ModesControlPanel() {
         status={status}
         openPositionsCount={openCount}
         tickInFlight={tickInFlight}
-        onActivate={activateSession}
+        onActivate={activate}
         onTakeProfit={takeProfit}
-        onHold={toggleHold}
-        onCloseAll={closeAllPositions}
+        onHold={holdToggle}
+        onCloseAll={closeAll}
       />
 
       {/* Session Status */}
       <div className="grid grid-cols-3 gap-3 p-2.5 rounded-xl bg-muted/20 border border-border/30">
         <div>
           <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Session</p>
-          <p className="font-semibold text-foreground uppercase text-sm">{status}</p>
+          <p className={cn("font-semibold uppercase text-sm", STATUS_COLORS[status])}>
+            {STATUS_LABELS[status]}
+          </p>
         </div>
         <div>
           <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Today P&L</p>

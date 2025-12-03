@@ -31,10 +31,11 @@ const CORE_MODES: { key: TradingMode; label: string; icon: typeof Zap; descripti
 ];
 
 export function ModeSelector({ selectedMode, onSelectMode, status }: ModeSelectorProps) {
-  const isActive = status === 'running' || status === 'holding' || status === 'arming';
+  // Can only change mode when idle or stopped
+  const canChangeMode = status === 'idle' || status === 'stopped';
 
   const handleModeChange = (mode: TradingMode) => {
-    if (isActive) {
+    if (!canChangeMode) {
       toast({
         title: 'Mode Locked',
         description: 'Stop the engine before changing mode.',
@@ -57,11 +58,11 @@ export function ModeSelector({ selectedMode, onSelectMode, status }: ModeSelecto
             <button
               key={key}
               onClick={() => handleModeChange(key)}
-              disabled={isActive}
+              disabled={!canChangeMode && !isSelected}
               className={cn(
                 "mode-card group relative",
                 isSelected && "mode-card-active",
-                isActive && !isSelected && "opacity-50 cursor-not-allowed"
+                !canChangeMode && !isSelected && "opacity-50 cursor-not-allowed"
               )}
             >
               {isSelected && (
