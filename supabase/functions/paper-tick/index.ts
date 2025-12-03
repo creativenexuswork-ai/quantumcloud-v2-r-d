@@ -386,7 +386,12 @@ serve(async (req) => {
   try {
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
     const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
-    const supabase = createClient(supabaseUrl, supabaseKey);
+    const supabase = createClient(supabaseUrl, supabaseKey, {
+      auth: {
+        autoRefreshToken: false,
+        persistSession: false,
+      },
+    });
 
     const authHeader = req.headers.get('Authorization')?.replace('Bearer ', '');
     if (!authHeader) {
@@ -771,7 +776,7 @@ serve(async (req) => {
           // Open position - all checks passed
           console.log(`[ENGINE] Opening: ${order.symbol} ${order.side} size=${order.size.toFixed(6)} @ ${order.entryPrice.toFixed(2)} risk=${actualRiskPercent.toFixed(3)}%`);
           
-          const { error: insertError } = await supabase.from('paper_positions').insert({
+          const insertPayload = {
             user_id: userId,
             symbol: order.symbol,
             mode: order.mode,
@@ -782,13 +787,19 @@ serve(async (req) => {
             tp: order.tp,
             batch_id: order.batchId,
             unrealized_pnl: 0,
-          });
+          };
+          
+          console.log(`[ENGINE] Insert payload:`, JSON.stringify(insertPayload));
+          
+          const { error: insertError } = await supabase.from('paper_positions').insert(insertPayload);
           
           if (insertError) {
-            console.error(`[ENGINE] Failed to insert position:`, insertError);
+            console.error(`[ENGINE] Insert error for ${order.symbol}:`, JSON.stringify(insertError));
             blockedReasons.push(`db_error:${order.symbol}`);
             continue;
           }
+          
+          console.log(`[ENGINE] Inserted position for ${order.symbol}`);
 
           usedRiskCount++;
           openedCount++;
