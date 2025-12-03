@@ -34,7 +34,7 @@ const DEFAULT_MARKET_CONFIG = {
 
 type Side = 'long' | 'short';
 type TradingMode = 'sniper' | 'burst' | 'trend' | 'swing' | 'memory' | 'stealth' | 'news' | 'hybrid';
-type SessionStatus = 'idle' | 'running' | 'paused' | 'stopped';
+type SessionStatus = 'idle' | 'running' | 'holding' | 'stopped';
 
 interface PriceTick {
   symbol: string;
@@ -545,7 +545,7 @@ serve(async (req) => {
     const { data: updatedConfig } = await supabase.from('paper_config').select('session_status').eq('user_id', userId).maybeSingle();
     const currentSessionStatus: SessionStatus = updatedConfig?.session_status || sessionStatus;
 
-    // Mark positions to market and check SL/TP (always do this, even when paused)
+    // Mark positions to market and check SL/TP (always do this, even when holding)
     for (const pos of (currentPositions || [])) {
       const tick = ticks[pos.symbol];
       if (!tick) continue;
@@ -604,7 +604,7 @@ serve(async (req) => {
     const finalWins = (finalTrades || []).filter((t: any) => Number(t.realized_pnl) > 0).length;
     const finalWinRate = finalClosedCount > 0 ? (finalWins / finalClosedCount) * 100 : 50;
 
-    // Determine if we should run modes (only when status is 'running', not 'paused')
+    // Determine if we should run modes (only when status is 'running', not 'holding')
     const shouldRunModes = currentSessionStatus === 'running' && !isHalted && !config.trading_halted_for_day && !globalClose && !takeBurstProfit;
     
     console.log(`[ENGINE] sessionStatus=${currentSessionStatus}, shouldRunModes=${shouldRunModes}, enabledModes=${JSON.stringify(modeConfig.enabledModes)}`);
@@ -786,9 +786,9 @@ serve(async (req) => {
           });
         }
       }
-    } else if (currentSessionStatus === 'paused') {
-      // Log that we're in paused state (only occasionally to avoid spam)
-      console.log(`[ENGINE] Session paused - managing existing positions only`);
+    } else if (currentSessionStatus === 'holding') {
+      // Log that we're in holding state (only occasionally to avoid spam)
+      console.log(`[ENGINE] Session on hold - managing existing positions only`);
     } else {
       console.log(`[ENGINE] Not running modes: sessionStatus=${currentSessionStatus}, isHalted=${isHalted}, tradingHalted=${config.trading_halted_for_day}`);
     }

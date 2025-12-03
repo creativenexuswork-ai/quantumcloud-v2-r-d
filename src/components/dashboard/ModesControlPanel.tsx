@@ -1,14 +1,14 @@
-import { Play, Pause, Square, Loader2 } from 'lucide-react';
-import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Slider } from '@/components/ui/slider';
-import { useFullSessionState, MODE_INFO, TradingMode } from '@/hooks/useSessionState';
-import { useTradingSession } from '@/hooks/usePaperTrading';
+import { useFullSessionState, TradingMode } from '@/hooks/useSessionState';
+import { useTradingSession, usePaperStats } from '@/hooks/usePaperTrading';
 import { cn } from '@/lib/utils';
-
-const MODES: TradingMode[] = ['burst', 'scalper', 'trend', 'swing', 'memory', 'sniper', 'risk-off', 'ai-assist'];
+import { ModeSelector } from './ModeSelector';
+import { AIEngineStrip } from './AIEngineStrip';
+import { ControlBar } from './ControlBar';
+import { toast } from '@/hooks/use-toast';
 
 export function ModesControlPanel() {
   const {
@@ -23,68 +23,134 @@ export function ModesControlPanel() {
     status,
   } = useFullSessionState();
 
-  const { startSession, stopSession, globalClose, tickInFlight } = useTradingSession();
+  const { 
+    startSession, 
+    stopSession, 
+    holdSession, 
+    resumeSession,
+    globalClose, 
+    takeBurstProfit,
+    tickInFlight 
+  } = useTradingSession();
+  
+  const { data: paperData } = usePaperStats();
+  const openPositionsCount = paperData?.stats?.openPositionsCount || 0;
 
-  const modeInfo = MODE_INFO[selectedMode];
+  // Control handlers
+  const handleActivate = () => {
+    if (status === 'running') {
+      // Already running - do nothing
+      return;
+    }
+    startSession();
+  };
+
+  const handleTakeProfit = () => {
+    if (openPositionsCount === 0) {
+      toast({
+        title: 'No Open Positions',
+        description: 'There are no positions to close.',
+      });
+      return;
+    }
+    takeBurstProfit();
+    // After taking profit, set to idle
+    stopSession();
+  };
+
+  const handleHold = () => {
+    if (status === 'running') {
+      holdSession();
+    } else if (status === 'holding') {
+      resumeSession();
+    }
+  };
+
+  const handleCloseAll = () => {
+    globalClose();
+  };
+
+  // Only show controls for the 3 core modes
+  const showBurstScalperControls = selectedMode === 'burst' || selectedMode === 'scalper';
+  const showTrendControls = selectedMode === 'trend';
 
   return (
-    <div className="glass-panel p-6 space-y-6">
-      {/* Mode Selector */}
-      <div>
-        <h3 className="text-sm font-medium text-muted-foreground mb-3">Select Mode</h3>
-        <div className="flex flex-wrap gap-2">
-          {MODES.map((mode) => (
-            <button
-              key={mode}
-              onClick={() => setSelectedMode(mode)}
-              className={cn(
-                "capitalize",
-                selectedMode === mode ? 'pill-active' : 'pill-inactive'
-              )}
-            >
-              {mode.replace('-', ' ')}
-            </button>
-          ))}
+    <div className="glass-panel p-5 space-y-5">
+      {/* Mode Selector - 3 Core Modes */}
+      <ModeSelector 
+        selectedMode={selectedMode} 
+        onSelectMode={setSelectedMode}
+        status={status}
+      />
+
+      {/* AI Engine Strip */}
+      <AIEngineStrip 
+        selectedMode={selectedMode}
+        marketRegime="trending"
+      />
+
+      {/* Control Bar */}
+      <ControlBar
+        status={status}
+        openPositionsCount={openPositionsCount}
+        tickInFlight={tickInFlight}
+        onActivate={handleActivate}
+        onTakeProfit={handleTakeProfit}
+        onHold={handleHold}
+        onCloseAll={handleCloseAll}
+      />
+
+      {/* Session Status */}
+      <div className="grid grid-cols-3 gap-4 p-3 rounded-xl bg-muted/20 border border-border/30">
+        <div>
+          <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Session</p>
+          <p className="font-semibold text-foreground uppercase text-sm">{status}</p>
+        </div>
+        <div>
+          <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Today P&L</p>
+          <p className={cn(
+            "font-mono font-semibold text-sm",
+            todayPnl >= 0 ? "profit-text" : "loss-text"
+          )}>
+            {todayPnl >= 0 ? '+' : ''}${todayPnl.toFixed(2)}
+          </p>
+        </div>
+        <div>
+          <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Trades</p>
+          <p className="font-semibold text-foreground text-sm">{tradesToday}</p>
         </div>
       </div>
 
-      {/* Mode Summary */}
-      <div className="space-y-2">
-        <h3 className="text-lg font-semibold text-foreground">{modeInfo.name}</h3>
-        <p className="text-sm text-muted-foreground">{modeInfo.description}</p>
-      </div>
-
       {/* Mode-Specific Controls */}
-      <div className="space-y-4">
-        <h4 className="text-sm font-medium text-muted-foreground">Mode Controls</h4>
-        
-        {(selectedMode === 'burst' || selectedMode === 'scalper') && (
-          <div className="grid grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <Label className="text-xs text-muted-foreground">Trades per Run</Label>
+      {showBurstScalperControls && (
+        <div className="space-y-4 pt-4 border-t border-border/30">
+          <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Mode Settings</h4>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1.5">
+              <Label className="text-[10px] text-muted-foreground uppercase">Trades per Run</Label>
               <Input
                 type="number"
                 value={modeConfig.burstTradesPerRun}
                 onChange={(e) => updateModeConfig({ burstTradesPerRun: parseInt(e.target.value) || 20 })}
-                className="bg-muted/30 border-border/50"
+                className="h-9 bg-muted/30 border-border/50 text-sm"
               />
             </div>
-            <div className="space-y-2">
-              <Label className="text-xs text-muted-foreground">Max Concurrent</Label>
+            <div className="space-y-1.5">
+              <Label className="text-[10px] text-muted-foreground uppercase">Max Concurrent</Label>
               <Input
                 type="number"
                 value={modeConfig.maxConcurrentPositions}
                 onChange={(e) => updateModeConfig({ maxConcurrentPositions: parseInt(e.target.value) || 5 })}
-                className="bg-muted/30 border-border/50"
+                className="h-9 bg-muted/30 border-border/50 text-sm"
               />
             </div>
-            <div className="space-y-2">
-              <Label className="text-xs text-muted-foreground">Duration</Label>
+            <div className="space-y-1.5">
+              <Label className="text-[10px] text-muted-foreground uppercase">Duration</Label>
               <Select 
                 value={modeConfig.burstDuration} 
                 onValueChange={(v: 'short' | 'medium' | 'long') => updateModeConfig({ burstDuration: v })}
               >
-                <SelectTrigger className="bg-muted/30 border-border/50">
+                <SelectTrigger className="h-9 bg-muted/30 border-border/50 text-sm">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -94,13 +160,13 @@ export function ModesControlPanel() {
                 </SelectContent>
               </Select>
             </div>
-            <div className="space-y-2">
-              <Label className="text-xs text-muted-foreground">TP Style</Label>
+            <div className="space-y-1.5">
+              <Label className="text-[10px] text-muted-foreground uppercase">TP Style</Label>
               <Select 
                 value={modeConfig.burstTpStyle} 
                 onValueChange={(v: 'fast' | 'scaled') => updateModeConfig({ burstTpStyle: v })}
               >
-                <SelectTrigger className="bg-muted/30 border-border/50">
+                <SelectTrigger className="h-9 bg-muted/30 border-border/50 text-sm">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -110,17 +176,20 @@ export function ModesControlPanel() {
               </Select>
             </div>
           </div>
-        )}
+        </div>
+      )}
 
-        {(selectedMode === 'trend' || selectedMode === 'swing') && (
-          <div className="grid grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <Label className="text-xs text-muted-foreground">Timeframe</Label>
+      {showTrendControls && (
+        <div className="space-y-4 pt-4 border-t border-border/30">
+          <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Mode Settings</h4>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1.5">
+              <Label className="text-[10px] text-muted-foreground uppercase">Timeframe</Label>
               <Select 
                 value={modeConfig.trendTimeframe} 
                 onValueChange={(v: 'intraday' | 'daily' | 'weekly') => updateModeConfig({ trendTimeframe: v })}
               >
-                <SelectTrigger className="bg-muted/30 border-border/50">
+                <SelectTrigger className="h-9 bg-muted/30 border-border/50 text-sm">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -130,13 +199,13 @@ export function ModesControlPanel() {
                 </SelectContent>
               </Select>
             </div>
-            <div className="space-y-2">
-              <Label className="text-xs text-muted-foreground">Signal Sensitivity</Label>
+            <div className="space-y-1.5">
+              <Label className="text-[10px] text-muted-foreground uppercase">Sensitivity</Label>
               <Select 
                 value={modeConfig.signalSensitivity} 
                 onValueChange={(v: 'low' | 'medium' | 'high') => updateModeConfig({ signalSensitivity: v })}
               >
-                <SelectTrigger className="bg-muted/30 border-border/50">
+                <SelectTrigger className="h-9 bg-muted/30 border-border/50 text-sm">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -146,117 +215,16 @@ export function ModesControlPanel() {
                 </SelectContent>
               </Select>
             </div>
-            <div className="space-y-2 col-span-2">
-              <Label className="text-xs text-muted-foreground">Max Positions</Label>
-              <Input
-                type="number"
-                value={modeConfig.maxConcurrentPositions}
-                onChange={(e) => updateModeConfig({ maxConcurrentPositions: parseInt(e.target.value) || 5 })}
-                className="bg-muted/30 border-border/50"
-              />
-            </div>
-          </div>
-        )}
-
-        {(selectedMode === 'memory' || selectedMode === 'ai-assist') && (
-          <div className="grid grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <Label className="text-xs text-muted-foreground">Lookback Window</Label>
-              <Input
-                type="number"
-                value={modeConfig.lookbackWindow}
-                onChange={(e) => updateModeConfig({ lookbackWindow: parseInt(e.target.value) || 50 })}
-                className="bg-muted/30 border-border/50"
-              />
-            </div>
-            <div className="space-y-2">
-              <Label className="text-xs text-muted-foreground">Confidence: {(modeConfig.confidenceThreshold * 100).toFixed(0)}%</Label>
-              <Slider
-                value={[modeConfig.confidenceThreshold * 100]}
-                onValueChange={([v]) => updateModeConfig({ confidenceThreshold: v / 100 })}
-                min={30}
-                max={95}
-                step={5}
-                className="py-2"
-              />
-            </div>
-          </div>
-        )}
-
-        {(selectedMode === 'sniper' || selectedMode === 'risk-off') && (
-          <div className="p-4 rounded-lg bg-muted/20 border border-border/30">
-            <p className="text-sm text-muted-foreground">
-              {selectedMode === 'sniper' 
-                ? 'Sniper mode uses default high-confidence settings. Waits for optimal entry conditions.'
-                : 'Risk-Off mode reduces all position sizes and widens stops. Use during uncertain markets.'}
-            </p>
-          </div>
-        )}
-      </div>
-
-      {/* Core Controls */}
-      <div className="space-y-4 pt-4 border-t border-border/30">
-        <div className="flex gap-2">
-          <Button
-            onClick={startSession}
-            disabled={status === 'running' || tickInFlight}
-            className="flex-1 btn-glow gap-2"
-          >
-            {tickInFlight ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <Play className="h-4 w-4" />
-            )}
-            {status === 'running' ? 'Running...' : 'Start Session'}
-          </Button>
-          <Button
-            variant="outline"
-            onClick={stopSession}
-            disabled={status !== 'running'}
-            className="gap-2"
-          >
-            <Pause className="h-4 w-4" />
-            Pause
-          </Button>
-          <Button
-            variant="destructive"
-            onClick={globalClose}
-            className="gap-2"
-          >
-            <Square className="h-4 w-4" />
-            Stop
-          </Button>
-        </div>
-
-        {/* Session Status */}
-        <div className="grid grid-cols-3 gap-4 p-3 rounded-lg bg-muted/20">
-          <div>
-            <p className="text-xs text-muted-foreground">Session</p>
-            <p className="font-medium text-foreground capitalize">{status}</p>
-          </div>
-          <div>
-            <p className="text-xs text-muted-foreground">Today's P&L</p>
-            <p className={cn(
-              "font-mono font-medium",
-              todayPnl >= 0 ? "profit-text" : "loss-text"
-            )}>
-              {todayPnl >= 0 ? '+' : ''}${todayPnl.toFixed(2)}
-            </p>
-          </div>
-          <div>
-            <p className="text-xs text-muted-foreground">Trades</p>
-            <p className="font-medium text-foreground">{tradesToday}</p>
           </div>
         </div>
-      </div>
+      )}
 
       {/* Risk HUD */}
       <div className="space-y-4 pt-4 border-t border-border/30">
-        <h4 className="text-sm font-medium text-muted-foreground">Risk HUD</h4>
-        
+        <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Risk Controls</h4>
         <div className="grid grid-cols-2 gap-4">
           <div className="space-y-2">
-            <Label className="text-xs text-muted-foreground">Max Daily Drawdown: {riskSettings.maxDailyDrawdown}%</Label>
+            <Label className="text-[10px] text-muted-foreground uppercase">Max Drawdown: {riskSettings.maxDailyDrawdown}%</Label>
             <Slider
               value={[riskSettings.maxDailyDrawdown]}
               onValueChange={([v]) => updateRiskSettings({ maxDailyDrawdown: v })}
@@ -267,7 +235,7 @@ export function ModesControlPanel() {
             />
           </div>
           <div className="space-y-2">
-            <Label className="text-xs text-muted-foreground">Per-Trade Risk: {riskSettings.maxPerTradeRisk}%</Label>
+            <Label className="text-[10px] text-muted-foreground uppercase">Per-Trade: {riskSettings.maxPerTradeRisk}%</Label>
             <Slider
               value={[riskSettings.maxPerTradeRisk]}
               onValueChange={([v]) => updateRiskSettings({ maxPerTradeRisk: v })}
@@ -277,24 +245,24 @@ export function ModesControlPanel() {
               className="py-2"
             />
           </div>
-          <div className="space-y-2">
-            <Label className="text-xs text-muted-foreground">Position Sizing</Label>
+          <div className="space-y-1.5">
+            <Label className="text-[10px] text-muted-foreground uppercase">Position Sizing</Label>
             <Select 
               value={riskSettings.positionSizingMode} 
               onValueChange={(v: 'fixed' | 'percent' | 'volatility') => updateRiskSettings({ positionSizingMode: v })}
             >
-              <SelectTrigger className="bg-muted/30 border-border/50">
+              <SelectTrigger className="h-9 bg-muted/30 border-border/50 text-sm">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="fixed">Fixed Size</SelectItem>
                 <SelectItem value="percent">% of Equity</SelectItem>
-                <SelectItem value="volatility">Volatility Adjusted</SelectItem>
+                <SelectItem value="volatility">Vol Adjusted</SelectItem>
               </SelectContent>
             </Select>
           </div>
           <div className="space-y-2">
-            <Label className="text-xs text-muted-foreground">Daily Target: {riskSettings.dailyProfitTarget}%</Label>
+            <Label className="text-[10px] text-muted-foreground uppercase">Target: {riskSettings.dailyProfitTarget}%</Label>
             <Slider
               value={[riskSettings.dailyProfitTarget]}
               onValueChange={([v]) => updateRiskSettings({ dailyProfitTarget: v })}

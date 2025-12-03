@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 
 export type AccountType = 'paper' | 'live';
-export type SessionStatus = 'idle' | 'running' | 'paused' | 'error';
+export type SessionStatus = 'idle' | 'running' | 'holding' | 'stopped';
 
 interface SessionState {
   accountType: AccountType;

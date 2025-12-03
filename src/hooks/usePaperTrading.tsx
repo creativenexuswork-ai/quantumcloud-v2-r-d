@@ -169,7 +169,7 @@ export function useTradingSession() {
   const { session } = useAuth();
   const { status, setStatus } = useSession();
   const isRunning = status === 'running';
-  const isPaused = status === 'paused';
+  const isHolding = status === 'holding';
   const [halted, setHalted] = useState(false);
   const [tickInFlight, setTickInFlight] = useState(false);
   
@@ -243,8 +243,8 @@ export function useTradingSession() {
   const startTickInterval = useCallback(() => {
     clearTickInterval();
     intervalRef.current = setInterval(async () => {
-      // Only tick if running or paused (paused still needs to manage positions)
-      if (statusRef.current !== 'running' && statusRef.current !== 'paused') return;
+      // Only tick if running or holding (holding still needs to manage positions)
+      if (statusRef.current !== 'running' && statusRef.current !== 'holding') return;
       
       const tickResult = await runTickInternal();
       if (tickResult?.halted) {
@@ -308,38 +308,38 @@ export function useTradingSession() {
     }
   }, [halted, status, runTickInternal, startTickInterval, setStatus]);
 
-  // Pause session - stop new trades but manage existing positions
-  const pauseSession = useCallback(async () => {
+  // Hold session - stop new trades but manage existing positions
+  const holdSession = useCallback(async () => {
     if (status !== 'running') return;
     
     try {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
 
-      // Update database with paused status - is_running stays true for position management
+      // Update database with holding status - is_running stays true for position management
       await supabase.from('paper_config').update({ 
-        session_status: 'paused'
+        session_status: 'holding'
       } as any).eq('user_id', user.id);
 
       await supabase.from('system_logs').insert({
         user_id: user.id, 
         level: 'info', 
         source: 'execution',
-        message: 'SESSION: Paused - no new trades; managing existing positions only',
+        message: 'SESSION: Holding - no new trades; managing existing positions only',
       });
 
-      setStatus('paused');
+      setStatus('holding');
       // Keep the interval running for position management
-      toast({ title: 'Session Paused', description: 'Managing existing positions only' });
+      toast({ title: 'Session On Hold', description: 'Managing existing positions only' });
     } catch (error) {
-      console.error('Pause session error:', error);
-      toast({ title: 'Error', description: 'Failed to pause session', variant: 'destructive' });
+      console.error('Hold session error:', error);
+      toast({ title: 'Error', description: 'Failed to hold session', variant: 'destructive' });
     }
   }, [status, setStatus]);
 
-  // Resume session - continue trading from paused state
+  // Resume session - continue trading from holding state
   const resumeSession = useCallback(async () => {
-    if (status !== 'paused') return;
+    if (status !== 'holding') return;
     
     try {
       const { data: { user } } = await supabase.auth.getUser();
@@ -504,8 +504,8 @@ export function useTradingSession() {
           const backendStatus = (config as any).session_status as SessionStatus || 'idle';
           setStatus(backendStatus);
           
-          // Start tick interval if running or paused
-          if ((backendStatus === 'running' || backendStatus === 'paused') && !config.trading_halted_for_day) {
+          // Start tick interval if running or holding
+          if ((backendStatus === 'running' || backendStatus === 'holding') && !config.trading_halted_for_day) {
             const result = await runTickInternal();
             
             if (!mounted) return;
@@ -537,11 +537,11 @@ export function useTradingSession() {
 
   return {
     isActive: isRunning, 
-    isPaused,
+    isHolding,
     halted, 
     tickInFlight,
     startSession, 
-    pauseSession,
+    holdSession,
     resumeSession,
     stopSession, 
     triggerBurst, 
