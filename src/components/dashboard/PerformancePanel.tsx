@@ -27,10 +27,10 @@ export function PerformancePanel() {
   const isPositive = todayPnl >= 0;
 
   return (
-    <div className="glass-panel p-6">
-      <h3 className="text-lg font-semibold text-foreground mb-4">Session Performance</h3>
+    <div className="glass-panel p-4">
+      <h3 className="text-sm font-semibold text-foreground uppercase tracking-wide mb-3">Performance</h3>
 
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
         <div className="space-y-1">
           <div className="flex items-center gap-2 text-muted-foreground">
             {isPositive ? (
@@ -41,13 +41,13 @@ export function PerformancePanel() {
             <span className="text-xs uppercase tracking-wider">Today's P&L</span>
           </div>
           <p className={cn(
-            "font-mono text-2xl font-bold",
+            "font-mono text-xl font-bold",
             isPositive ? "profit-text" : "loss-text"
           )}>
             {isPositive ? '+' : ''}${todayPnl.toFixed(2)}
           </p>
           <p className={cn(
-            "text-sm font-mono",
+            "text-xs font-mono",
             isPositive ? "profit-text" : "loss-text"
           )}>
             {isPositive ? '+' : ''}{todayPnlPercent.toFixed(2)}%
@@ -59,8 +59,8 @@ export function PerformancePanel() {
             <Target className="h-4 w-4" />
             <span className="text-xs uppercase tracking-wider">Trades</span>
           </div>
-          <p className="font-mono text-2xl font-bold text-foreground">{tradesToday}</p>
-          <p className="text-sm text-muted-foreground">Today</p>
+          <p className="font-mono text-xl font-bold text-foreground">{tradesToday}</p>
+          <p className="text-xs text-muted-foreground">Today</p>
         </div>
 
         <div className="space-y-1">
@@ -69,12 +69,12 @@ export function PerformancePanel() {
             <span className="text-xs uppercase tracking-wider">Win Rate</span>
           </div>
           <p className={cn(
-            "font-mono text-2xl font-bold",
+            "font-mono text-xl font-bold",
             winRate >= 50 ? "profit-text" : "text-foreground"
           )}>
             {winRate.toFixed(1)}%
           </p>
-          <p className="text-sm text-muted-foreground">Overall</p>
+          <p className="text-xs text-muted-foreground">Overall</p>
         </div>
 
         <div className="space-y-1">
@@ -82,13 +82,13 @@ export function PerformancePanel() {
             <TrendingUp className="h-4 w-4" />
             <span className="text-xs uppercase tracking-wider">Avg R:R</span>
           </div>
-          <p className="font-mono text-2xl font-bold text-foreground">{avgRR.toFixed(2)}</p>
-          <p className="text-sm text-muted-foreground">Reward/Risk</p>
+          <p className="font-mono text-xl font-bold text-foreground">{avgRR.toFixed(2)}</p>
+          <p className="text-xs text-muted-foreground">R:R</p>
         </div>
       </div>
 
       {/* P&L Sparkline */}
-      <div className="h-20 rounded-lg bg-muted/20 p-2 relative overflow-hidden">
+      <div className="h-16 rounded-lg bg-muted/20 p-2 relative overflow-hidden">
         <svg className="w-full h-full" preserveAspectRatio="none">
           <defs>
             <linearGradient id="pnlGradient" x1="0%" y1="0%" x2="0%" y2="100%">
@@ -142,9 +142,9 @@ export function PerformancePanel() {
       </div>
 
       {/* Equity display */}
-      <div className="mt-4 p-3 rounded-lg bg-muted/20 flex items-center justify-between">
-        <span className="text-sm text-muted-foreground">Account Equity</span>
-        <span className="font-mono text-lg font-semibold text-foreground">
+      <div className="mt-3 p-2.5 rounded-lg bg-muted/20 flex items-center justify-between">
+        <span className="text-xs text-muted-foreground">Equity</span>
+        <span className="font-mono text-sm font-semibold text-foreground">
           ${equity.toLocaleString('en-US', { minimumFractionDigits: 2 })}
         </span>
       </div>

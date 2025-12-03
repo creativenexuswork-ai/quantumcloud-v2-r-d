@@ -9,10 +9,19 @@ import {
 import { useSessionActions } from '@/hooks/useSessionActions';
 
 const MODES: { key: TradingMode; label: string; icon: typeof Zap }[] = [
-  { key: 'burst', label: 'BURST', icon: Zap },
-  { key: 'scalper', label: 'SCALPER', icon: Crosshair },
-  { key: 'trend', label: 'TREND', icon: TrendingUp },
+  { key: 'burst', label: 'Burst', icon: Zap },
+  { key: 'scalper', label: 'Scalper', icon: Crosshair },
+  { key: 'trend', label: 'Trend', icon: TrendingUp },
 ];
+
+// Status badge colors
+const STATUS_BG: Record<string, string> = {
+  idle: 'bg-muted/50 text-muted-foreground',
+  running: 'bg-emerald-500/20 text-emerald-400',
+  holding: 'bg-amber-500/20 text-amber-300',
+  stopped: 'bg-muted/50 text-muted-foreground',
+  error: 'bg-destructive/20 text-destructive',
+};
 
 export function CockpitPanel() {
   const { 
@@ -29,27 +38,57 @@ export function CockpitPanel() {
   const { canActivate, canHold, canTakeProfit, canCloseAll, canChangeMode } = buttonStates;
   
   const isHolding = status === 'holding';
-
-  // Mock price data - in real app this would come from market data hook
-  const priceChange = 1.2;
-  const isPositiveChange = priceChange >= 0;
+  const isRunning = status === 'running';
 
   return (
-    <div className="bg-slate-900/80 rounded-2xl border border-slate-700/60 shadow-lg px-4 py-3 space-y-3">
-      {/* Row 1: Symbol + Price + Change */}
-      <div className="flex items-baseline justify-between gap-2">
-        <span className="text-xs tracking-wide text-slate-400 uppercase font-medium">BTC/USDT</span>
-        <span className="text-lg font-semibold text-slate-50 font-mono">$48,229.50</span>
-        <span className={cn(
-          "text-sm font-semibold font-mono",
-          isPositiveChange ? "text-emerald-400" : "text-red-400"
-        )}>
-          {isPositiveChange ? '+' : ''}{priceChange.toFixed(1)}%
-        </span>
+    <div className="glass-panel p-3 space-y-3">
+      {/* ROW 1: Status + AI + Mini Stats */}
+      <div className="flex items-center justify-between gap-2">
+        {/* Left: Status + AI */}
+        <div className="flex items-center gap-2">
+          <span className={cn(
+            "px-2 py-1 rounded text-[11px] font-semibold uppercase tracking-wide",
+            STATUS_BG[status]
+          )}>
+            {STATUS_LABELS[status]}
+          </span>
+          
+          <div className="flex items-center gap-1 text-[11px] text-muted-foreground">
+            <Brain className="h-3 w-3" />
+            <span>AI:</span>
+            <span className={cn(
+              "font-medium",
+              isRunning || isHolding ? "text-emerald-400" : "text-muted-foreground"
+            )}>
+              {isRunning || isHolding ? 'active' : 'idle'}
+            </span>
+          </div>
+        </div>
+        
+        {/* Right: Mini Stats */}
+        <div className="flex items-center gap-3 text-[11px]">
+          <div className="flex items-center gap-1">
+            <span className="text-muted-foreground">P&L:</span>
+            <span className={cn(
+              "font-mono font-semibold",
+              pnlToday >= 0 ? "text-success" : "text-destructive"
+            )}>
+              {pnlToday >= 0 ? '+' : ''}${pnlToday.toFixed(2)}
+            </span>
+          </div>
+          <div className="flex items-center gap-1">
+            <span className="text-muted-foreground">Trades:</span>
+            <span className="font-mono font-medium text-foreground">{tradesToday}</span>
+          </div>
+          <div className="flex items-center gap-1">
+            <span className="text-muted-foreground">Open:</span>
+            <span className="font-mono font-medium text-foreground">{openCount}</span>
+          </div>
+        </div>
       </div>
 
-      {/* Row 2: Mode Pills */}
-      <div className="flex gap-2">
+      {/* ROW 2: Mode Pills */}
+      <div className="flex items-center gap-2">
         {MODES.map(({ key, label, icon: Icon }) => {
           const isSelected = mode === key;
           const isLocked = !canChangeMode;
@@ -59,146 +98,92 @@ export function CockpitPanel() {
               onClick={() => changeMode(key)}
               disabled={isLocked && !isSelected}
               className={cn(
-                "flex-1 min-w-0 rounded-full border px-3 py-2 flex items-center justify-center gap-1.5 transition-all",
+                "flex-1 py-1.5 px-2 rounded-lg flex items-center justify-center gap-1 text-xs font-medium transition-all border",
                 isSelected 
-                  ? "bg-blue-600/80 border-blue-400/80 shadow-[0_0_16px_rgba(37,99,235,0.6)] text-slate-50" 
-                  : "bg-slate-900/90 border-slate-700/70 text-slate-300 hover:bg-slate-800/80",
+                  ? "bg-primary/20 border-primary/50 text-primary" 
+                  : "bg-muted/30 border-transparent text-muted-foreground hover:bg-muted/50",
                 (isLocked && !isSelected) && "opacity-50 cursor-not-allowed"
               )}
             >
-              <Icon className="h-3.5 w-3.5" />
-              <span className="text-sm font-semibold">{label}</span>
+              <Icon className="h-3 w-3" />
+              <span>{label}</span>
             </button>
           );
         })}
       </div>
 
-      {/* Row 3: AI Engine Strip */}
-      <div className="flex items-center justify-between gap-2 text-xs text-slate-300 py-1">
-        <div className="flex items-center gap-1.5">
-          <Brain className="h-3.5 w-3.5 text-blue-400" />
-          <span className="text-slate-400">AI Engine</span>
-          <span className={cn(
-            "rounded-full px-2 py-0.5 text-[10px] font-semibold",
-            status === 'running' ? "bg-emerald-500/20 text-emerald-300" :
-            status === 'holding' ? "bg-amber-500/20 text-amber-300" :
-            status === 'error' ? "bg-red-500/20 text-red-300" :
-            "bg-slate-700/50 text-slate-400"
-          )}>
-            {status === 'running' ? 'Active' : status === 'holding' ? 'Holding' : status === 'error' ? 'Error' : 'Idle'}
-          </span>
-        </div>
-        <div className="flex items-center gap-1">
-          <span className="text-slate-500">Regime:</span>
-          <span className="text-slate-200 font-medium">Trending</span>
-        </div>
-        <div className="flex items-center gap-1">
-          <span className="text-slate-500">Target:</span>
-          <span className="text-emerald-400 font-mono font-medium">+2.5%</span>
-        </div>
-      </div>
-
-      {/* Row 4: 2x2 Control Button Grid */}
-      <div className="grid grid-cols-2 gap-3">
+      {/* ROW 3: Control Buttons - 4 in a row */}
+      <div className="grid grid-cols-4 gap-2">
         {/* ACTIVATE */}
         <button
           onClick={activate}
-          disabled={!canActivate}
+          disabled={!canActivate || tickInFlight}
           className={cn(
-            "h-11 rounded-xl flex items-center justify-center gap-2 text-sm font-semibold transition-all",
-            canActivate 
-              ? "bg-blue-600/90 hover:bg-blue-500 text-slate-50 shadow-lg shadow-blue-600/20" 
-              : "bg-blue-600/40 text-slate-50/60 cursor-not-allowed"
+            "h-9 rounded-lg flex items-center justify-center gap-1 text-[11px] font-semibold transition-all",
+            canActivate && !tickInFlight
+              ? "bg-primary hover:bg-primary/90 text-primary-foreground" 
+              : "bg-muted/30 text-muted-foreground cursor-not-allowed"
           )}
         >
           {tickInFlight ? (
-            <Loader2 className="h-4 w-4 animate-spin" />
+            <Loader2 className="h-3 w-3 animate-spin" />
           ) : (
-            <Power className="h-4 w-4" />
+            <Power className="h-3 w-3" />
           )}
-          <span>ACTIVATE</span>
-        </button>
-
-        {/* TAKE PROFIT */}
-        <button
-          onClick={takeProfit}
-          disabled={!canTakeProfit}
-          className={cn(
-            "h-11 rounded-xl flex items-center justify-center gap-2 text-sm font-semibold transition-all",
-            canTakeProfit 
-              ? "bg-emerald-600/90 hover:bg-emerald-500 text-slate-50 shadow-lg shadow-emerald-600/20" 
-              : "bg-emerald-600/30 text-slate-50/50 cursor-not-allowed"
-          )}
-        >
-          <DollarSign className="h-4 w-4" />
-          <span>TAKE PROFIT</span>
+          <span className="hidden sm:inline">Activate</span>
         </button>
 
         {/* HOLD */}
         <button
           onClick={holdToggle}
-          disabled={!canHold}
+          disabled={!canHold || tickInFlight}
           className={cn(
-            "h-11 rounded-xl flex items-center justify-center gap-2 text-sm font-semibold transition-all",
-            !canHold 
-              ? "bg-slate-800/50 text-slate-500 cursor-not-allowed" 
+            "h-9 rounded-lg flex items-center justify-center gap-1 text-[11px] font-semibold transition-all border",
+            !canHold || tickInFlight
+              ? "bg-muted/20 border-transparent text-muted-foreground cursor-not-allowed" 
               : isHolding 
-                ? "bg-amber-600/30 border border-amber-500/50 text-amber-300 hover:bg-amber-600/40" 
-                : "bg-slate-800/90 hover:bg-slate-700 text-slate-100 border border-slate-700/50"
+                ? "bg-amber-500/20 border-amber-500/50 text-amber-300 hover:bg-amber-500/30" 
+                : "bg-muted/30 border-transparent text-foreground hover:bg-muted/50"
           )}
         >
-          {isHolding ? <Play className="h-4 w-4" /> : <Pause className="h-4 w-4" />}
-          <span>{isHolding ? 'RESUME' : 'HOLD'}</span>
+          {isHolding ? <Play className="h-3 w-3" /> : <Pause className="h-3 w-3" />}
+          <span className="hidden sm:inline">{isHolding ? 'Resume' : 'Hold'}</span>
+        </button>
+
+        {/* TAKE PROFIT */}
+        <button
+          onClick={takeProfit}
+          disabled={!canTakeProfit || tickInFlight}
+          className={cn(
+            "h-9 rounded-lg flex items-center justify-center gap-1 text-[11px] font-semibold transition-all",
+            canTakeProfit && !tickInFlight
+              ? "bg-success hover:bg-success/90 text-white" 
+              : "bg-muted/30 text-muted-foreground cursor-not-allowed"
+          )}
+        >
+          <DollarSign className="h-3 w-3" />
+          <span className="hidden sm:inline">Take Profit</span>
         </button>
 
         {/* CLOSE ALL */}
         <button
           onClick={closeAll}
-          disabled={!canCloseAll}
+          disabled={!canCloseAll || tickInFlight}
           className={cn(
-            "h-11 rounded-xl flex items-center justify-center gap-2 text-sm font-semibold transition-all",
-            canCloseAll 
-              ? "bg-red-600/90 hover:bg-red-500 text-slate-50 shadow-lg shadow-red-600/20" 
-              : "bg-red-600/30 text-slate-50/50 cursor-not-allowed"
+            "h-9 rounded-lg flex items-center justify-center gap-1 text-[11px] font-semibold transition-all",
+            canCloseAll && !tickInFlight
+              ? "bg-destructive hover:bg-destructive/90 text-destructive-foreground" 
+              : "bg-muted/30 text-muted-foreground cursor-not-allowed"
           )}
         >
-          <XCircle className="h-4 w-4" />
-          <span>CLOSE ALL</span>
+          <XCircle className="h-3 w-3" />
+          <span className="hidden sm:inline">Close All</span>
         </button>
-      </div>
-
-      {/* Row 5: Session Status Strip */}
-      <div className="flex items-center justify-between text-[11px] text-slate-300 pt-2 border-t border-slate-800/80">
-        <div className="flex items-center gap-1.5">
-          <span className="text-slate-500">Session:</span>
-          <span className={cn("font-bold uppercase", STATUS_COLORS[status])}>
-            {STATUS_LABELS[status]}
-          </span>
-        </div>
-        <div className="flex items-center gap-1">
-          <span className="text-slate-500">P&L:</span>
-          <span className={cn(
-            "font-mono font-semibold",
-            pnlToday >= 0 ? "text-emerald-400" : "text-red-400"
-          )}>
-            {pnlToday >= 0 ? '+' : ''}${pnlToday.toFixed(2)}
-          </span>
-        </div>
-        <div className="flex items-center gap-1">
-          <span className="text-slate-500">Trades:</span>
-          <span className="text-slate-200 font-medium">{tradesToday}</span>
-        </div>
-        {openCount > 0 && (
-          <div className="flex items-center gap-1">
-            <span className="text-slate-500">Open:</span>
-            <span className="text-blue-400 font-semibold">{openCount}</span>
-          </div>
-        )}
       </div>
 
       {/* Error message if present */}
       {lastError && status === 'error' && (
-        <div className="text-[10px] text-red-400 text-center px-2 truncate bg-red-500/10 rounded py-1">
+        <div className="text-xs text-destructive bg-destructive/10 rounded px-2 py-1.5 text-center">
           {lastError}
         </div>
       )}

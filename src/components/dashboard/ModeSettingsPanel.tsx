@@ -18,8 +18,8 @@ export function ModeSettingsPanel() {
   const showTrendControls = selectedMode === 'trend';
 
   return (
-    <div className="glass-panel p-4 space-y-4">
-      <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+    <div className="glass-panel p-4 space-y-3">
+      <h3 className="text-sm font-semibold text-foreground uppercase tracking-wide">
         Mode Settings
       </h3>
 
@@ -117,7 +117,7 @@ export function ModeSettingsPanel() {
 
       {/* Risk Controls */}
       <div className="space-y-3 pt-3 border-t border-border/30">
-        <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Risk Controls</h4>
+        <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Risk</h4>
         <div className="grid grid-cols-2 gap-3">
           <div className="space-y-1.5">
             <Label className="text-[10px] text-muted-foreground uppercase">Max DD: {riskSettings.maxDailyDrawdown}%</Label>

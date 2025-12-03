@@ -7,13 +7,13 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { useAuth } from '@/hooks/useAuth';
-import { useSessionStore, STATUS_COLORS, STATUS_LABELS } from '@/lib/state/sessionMachine';
+import { useSessionStore, STATUS_LABELS } from '@/lib/state/sessionMachine';
 import { toast } from '@/hooks/use-toast';
 import { cn } from '@/lib/utils';
 
 export function Header() {
   const { user, signOut } = useAuth();
-  const { accountType, status, mode, dispatch } = useSessionStore();
+  const { accountType, status, mode } = useSessionStore();
 
   const handleLiveClick = () => {
     if (accountType === 'live') return;

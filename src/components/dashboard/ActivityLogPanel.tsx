@@ -40,8 +40,8 @@ export function ActivityLogPanel() {
   };
 
   return (
-    <div className="glass-panel p-6 h-full flex flex-col">
-      <h3 className="text-lg font-semibold text-foreground mb-4">Activity Log</h3>
+    <div className="glass-panel p-4 h-full flex flex-col">
+      <h3 className="text-sm font-semibold text-foreground uppercase tracking-wide mb-3">Activity Log</h3>
 
       <div className="flex-1 overflow-auto custom-scrollbar space-y-2">
         {displayLogs.map((entry) => (

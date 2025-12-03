@@ -14,10 +14,10 @@ export function WatchlistPanel() {
   };
 
   return (
-    <div className="glass-panel p-6 h-full flex flex-col">
-      <div className="flex items-center justify-between mb-4">
-        <h3 className="text-lg font-semibold text-foreground">Watchlist</h3>
-        <Star className="h-4 w-4 text-muted-foreground" />
+    <div className="glass-panel p-4 h-full flex flex-col">
+      <div className="flex items-center justify-between mb-3">
+        <h3 className="text-sm font-semibold text-foreground uppercase tracking-wide">Watchlist</h3>
+        <Star className="h-3.5 w-3.5 text-muted-foreground" />
       </div>
 
       <div className="flex-1 overflow-auto custom-scrollbar space-y-1">
