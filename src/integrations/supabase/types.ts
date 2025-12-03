@@ -203,6 +203,225 @@ export type Database = {
         }
         Relationships: []
       }
+      paper_config: {
+        Row: {
+          broker_api_url: string | null
+          burst_config: Json | null
+          burst_requested: boolean | null
+          market_config: Json | null
+          mode_config: Json | null
+          risk_config: Json | null
+          show_advanced_explanations: boolean | null
+          trading_halted_for_day: boolean | null
+          updated_at: string | null
+          use_ai_reasoning: boolean | null
+          user_id: string
+        }
+        Insert: {
+          broker_api_url?: string | null
+          burst_config?: Json | null
+          burst_requested?: boolean | null
+          market_config?: Json | null
+          mode_config?: Json | null
+          risk_config?: Json | null
+          show_advanced_explanations?: boolean | null
+          trading_halted_for_day?: boolean | null
+          updated_at?: string | null
+          use_ai_reasoning?: boolean | null
+          user_id: string
+        }
+        Update: {
+          broker_api_url?: string | null
+          burst_config?: Json | null
+          burst_requested?: boolean | null
+          market_config?: Json | null
+          mode_config?: Json | null
+          risk_config?: Json | null
+          show_advanced_explanations?: boolean | null
+          trading_halted_for_day?: boolean | null
+          updated_at?: string | null
+          use_ai_reasoning?: boolean | null
+          user_id?: string
+        }
+        Relationships: []
+      }
+      paper_positions: {
+        Row: {
+          batch_id: string | null
+          closed: boolean | null
+          entry_price: number
+          id: string
+          mode: string
+          opened_at: string | null
+          side: string
+          size: number
+          sl: number | null
+          symbol: string
+          tp: number | null
+          unrealized_pnl: number | null
+          user_id: string
+        }
+        Insert: {
+          batch_id?: string | null
+          closed?: boolean | null
+          entry_price: number
+          id?: string
+          mode: string
+          opened_at?: string | null
+          side: string
+          size: number
+          sl?: number | null
+          symbol: string
+          tp?: number | null
+          unrealized_pnl?: number | null
+          user_id: string
+        }
+        Update: {
+          batch_id?: string | null
+          closed?: boolean | null
+          entry_price?: number
+          id?: string
+          mode?: string
+          opened_at?: string | null
+          side?: string
+          size?: number
+          sl?: number | null
+          symbol?: string
+          tp?: number | null
+          unrealized_pnl?: number | null
+          user_id?: string
+        }
+        Relationships: []
+      }
+      paper_stats_daily: {
+        Row: {
+          equity_end: number
+          equity_start: number
+          id: string
+          max_drawdown: number | null
+          pnl: number | null
+          trade_date: string
+          trades_count: number | null
+          user_id: string
+          win_rate: number | null
+        }
+        Insert: {
+          equity_end?: number
+          equity_start?: number
+          id?: string
+          max_drawdown?: number | null
+          pnl?: number | null
+          trade_date: string
+          trades_count?: number | null
+          user_id: string
+          win_rate?: number | null
+        }
+        Update: {
+          equity_end?: number
+          equity_start?: number
+          id?: string
+          max_drawdown?: number | null
+          pnl?: number | null
+          trade_date?: string
+          trades_count?: number | null
+          user_id?: string
+          win_rate?: number | null
+        }
+        Relationships: []
+      }
+      paper_trades: {
+        Row: {
+          batch_id: string | null
+          closed_at: string | null
+          entry_price: number
+          exit_price: number
+          id: string
+          mode: string
+          opened_at: string
+          realized_pnl: number
+          reason: string | null
+          session_date: string | null
+          side: string
+          size: number
+          sl: number | null
+          symbol: string
+          tp: number | null
+          user_id: string
+        }
+        Insert: {
+          batch_id?: string | null
+          closed_at?: string | null
+          entry_price: number
+          exit_price: number
+          id?: string
+          mode: string
+          opened_at: string
+          realized_pnl: number
+          reason?: string | null
+          session_date?: string | null
+          side: string
+          size: number
+          sl?: number | null
+          symbol: string
+          tp?: number | null
+          user_id: string
+        }
+        Update: {
+          batch_id?: string | null
+          closed_at?: string | null
+          entry_price?: number
+          exit_price?: number
+          id?: string
+          mode?: string
+          opened_at?: string
+          realized_pnl?: number
+          reason?: string | null
+          session_date?: string | null
+          side?: string
+          size?: number
+          sl?: number | null
+          symbol?: string
+          tp?: number | null
+          user_id?: string
+        }
+        Relationships: []
+      }
+      price_history: {
+        Row: {
+          ask: number
+          bid: number
+          id: number
+          mid: number
+          regime: string | null
+          symbol: string
+          timeframe: string | null
+          timestamp: string
+          volatility: number | null
+        }
+        Insert: {
+          ask: number
+          bid: number
+          id?: number
+          mid: number
+          regime?: string | null
+          symbol: string
+          timeframe?: string | null
+          timestamp?: string
+          volatility?: number | null
+        }
+        Update: {
+          ask?: number
+          bid?: number
+          id?: number
+          mid?: number
+          regime?: string | null
+          symbol?: string
+          timeframe?: string | null
+          timestamp?: string
+          volatility?: number | null
+        }
+        Relationships: []
+      }
       profiles: {
         Row: {
           created_at: string
@@ -221,6 +440,36 @@ export type Database = {
           email?: string | null
           id?: string
           user_id?: string
+        }
+        Relationships: []
+      }
+      symbols: {
+        Row: {
+          created_at: string | null
+          id: string
+          is_active: boolean | null
+          name: string
+          spread_estimate: number | null
+          symbol: string
+          type: string
+        }
+        Insert: {
+          created_at?: string | null
+          id?: string
+          is_active?: boolean | null
+          name: string
+          spread_estimate?: number | null
+          symbol: string
+          type: string
+        }
+        Update: {
+          created_at?: string | null
+          id?: string
+          is_active?: boolean | null
+          name?: string
+          spread_estimate?: number | null
+          symbol?: string
+          type?: string
         }
         Relationships: []
       }
