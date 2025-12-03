@@ -208,9 +208,11 @@ export type Database = {
           broker_api_url: string | null
           burst_config: Json | null
           burst_requested: boolean | null
+          is_running: boolean | null
           market_config: Json | null
           mode_config: Json | null
           risk_config: Json | null
+          session_started_at: string | null
           show_advanced_explanations: boolean | null
           trading_halted_for_day: boolean | null
           updated_at: string | null
@@ -221,9 +223,11 @@ export type Database = {
           broker_api_url?: string | null
           burst_config?: Json | null
           burst_requested?: boolean | null
+          is_running?: boolean | null
           market_config?: Json | null
           mode_config?: Json | null
           risk_config?: Json | null
+          session_started_at?: string | null
           show_advanced_explanations?: boolean | null
           trading_halted_for_day?: boolean | null
           updated_at?: string | null
@@ -234,9 +238,11 @@ export type Database = {
           broker_api_url?: string | null
           burst_config?: Json | null
           burst_requested?: boolean | null
+          is_running?: boolean | null
           market_config?: Json | null
           mode_config?: Json | null
           risk_config?: Json | null
+          session_started_at?: string | null
           show_advanced_explanations?: boolean | null
           trading_halted_for_day?: boolean | null
           updated_at?: string | null
