@@ -1,12 +1,13 @@
 import { Loader2, Power, DollarSign, Pause, XCircle } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { SessionStatus } from '@/lib/state/sessionMachine';
+import { SessionStatus, PendingAction } from '@/lib/state/sessionMachine';
 import { toast } from '@/hooks/use-toast';
 
 interface ControlBarProps {
   status: SessionStatus;
   openPositionsCount: number;
-  tickInFlight: boolean;
+  showSpinner: boolean;
+  pendingAction: PendingAction;
   onActivate: () => void;
   onTakeProfit: () => void;
   onHold: () => void;
@@ -16,7 +17,8 @@ interface ControlBarProps {
 export function ControlBar({
   status,
   openPositionsCount,
-  tickInFlight,
+  showSpinner,
+  pendingAction,
   onActivate,
   onTakeProfit,
   onHold,
@@ -26,6 +28,12 @@ export function ControlBar({
   const isHolding = status === 'holding';
   const isIdle = status === 'idle' || status === 'stopped';
   const isActive = isRunning || isHolding;
+
+  // Button enabled states - computed from status, NOT from polling
+  const canActivate = (isIdle || isHolding) && !showSpinner;
+  const canHold = isRunning && !showSpinner;
+  const canTakeProfit = isActive && openPositionsCount > 0 && !showSpinner;
+  const canCloseAll = isActive && !showSpinner;
 
   const handleTakeProfit = () => {
     if (isIdle) {
@@ -56,13 +64,13 @@ export function ControlBar({
       {/* ACTIVATE / RESUME */}
       <button
         onClick={onActivate}
-        disabled={tickInFlight || isRunning}
+        disabled={!canActivate}
         className={cn(
           "control-btn control-btn-primary",
           isRunning && "control-btn-active"
         )}
       >
-        {tickInFlight ? (
+        {pendingAction === 'activate' ? (
           <Loader2 className="h-4 w-4 animate-spin" />
         ) : (
           <Power className="h-4 w-4" />
@@ -70,36 +78,48 @@ export function ControlBar({
         <span>{isHolding ? 'RESUME' : 'ACTIVATE'}</span>
       </button>
 
-      {/* TAKE PROFIT - enabled when running or holding */}
+      {/* TAKE PROFIT - enabled when running or holding AND has positions */}
       <button
         onClick={handleTakeProfit}
-        disabled={tickInFlight || isIdle}
+        disabled={!canTakeProfit}
         className="control-btn control-btn-success control-btn-wide"
       >
-        <DollarSign className="h-4 w-4" />
+        {pendingAction === 'takeProfit' ? (
+          <Loader2 className="h-4 w-4 animate-spin" />
+        ) : (
+          <DollarSign className="h-4 w-4" />
+        )}
         <span>TAKE PROFIT</span>
       </button>
 
       {/* HOLD - only enabled when running */}
       <button
         onClick={handleHold}
-        disabled={tickInFlight || !isRunning}
+        disabled={!canHold}
         className={cn(
           "control-btn control-btn-outline",
           isHolding && "control-btn-holding"
         )}
       >
-        <Pause className="h-4 w-4" />
+        {pendingAction === 'hold' ? (
+          <Loader2 className="h-4 w-4 animate-spin" />
+        ) : (
+          <Pause className="h-4 w-4" />
+        )}
         <span>HOLD</span>
       </button>
 
       {/* CLOSE ALL - enabled when running or holding */}
       <button
         onClick={onCloseAll}
-        disabled={tickInFlight || isIdle}
+        disabled={!canCloseAll}
         className="control-btn control-btn-danger"
       >
-        <XCircle className="h-4 w-4" />
+        {pendingAction === 'closeAll' ? (
+          <Loader2 className="h-4 w-4 animate-spin" />
+        ) : (
+          <XCircle className="h-4 w-4" />
+        )}
         <span>CLOSE ALL</span>
       </button>
     </div>

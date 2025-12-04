@@ -30,12 +30,12 @@ export function CockpitPanel() {
     pnlToday, 
     tradesToday, 
     openCount, 
-    tickInFlight,
+    pendingAction,
     lastError,
   } = useSessionStore();
   
   const { buttonStates, activate, holdToggle, takeProfit, closeAll, changeMode } = useSessionActions();
-  const { canActivate, canHold, canTakeProfit, canCloseAll, canChangeMode } = buttonStates;
+  const { canActivate, canHold, canTakeProfit, canCloseAll, canChangeMode, showSpinner } = buttonStates;
   
   const isHolding = status === 'holding';
   const isRunning = status === 'running';
@@ -117,15 +117,15 @@ export function CockpitPanel() {
         {/* ACTIVATE */}
         <button
           onClick={activate}
-          disabled={!canActivate || tickInFlight}
+          disabled={!canActivate}
           className={cn(
             "h-9 rounded-lg flex items-center justify-center gap-1 text-[11px] font-semibold transition-all",
-            canActivate && !tickInFlight
+            canActivate
               ? "bg-primary hover:bg-primary/90 text-primary-foreground" 
               : "bg-muted/30 text-muted-foreground cursor-not-allowed"
           )}
         >
-          {tickInFlight ? (
+          {pendingAction === 'activate' ? (
             <Loader2 className="h-3 w-3 animate-spin" />
           ) : (
             <Power className="h-3 w-3" />
@@ -136,47 +136,61 @@ export function CockpitPanel() {
         {/* HOLD */}
         <button
           onClick={holdToggle}
-          disabled={!canHold || tickInFlight}
+          disabled={!canHold}
           className={cn(
             "h-9 rounded-lg flex items-center justify-center gap-1 text-[11px] font-semibold transition-all border",
-            !canHold || tickInFlight
+            !canHold
               ? "bg-muted/20 border-transparent text-muted-foreground cursor-not-allowed" 
               : isHolding 
                 ? "bg-amber-500/20 border-amber-500/50 text-amber-300 hover:bg-amber-500/30" 
                 : "bg-muted/30 border-transparent text-foreground hover:bg-muted/50"
           )}
         >
-          {isHolding ? <Play className="h-3 w-3" /> : <Pause className="h-3 w-3" />}
+          {pendingAction === 'hold' ? (
+            <Loader2 className="h-3 w-3 animate-spin" />
+          ) : isHolding ? (
+            <Play className="h-3 w-3" />
+          ) : (
+            <Pause className="h-3 w-3" />
+          )}
           <span className="hidden sm:inline">{isHolding ? 'Resume' : 'Hold'}</span>
         </button>
 
         {/* TAKE PROFIT */}
         <button
           onClick={takeProfit}
-          disabled={!canTakeProfit || tickInFlight}
+          disabled={!canTakeProfit}
           className={cn(
             "h-9 rounded-lg flex items-center justify-center gap-1 text-[11px] font-semibold transition-all",
-            canTakeProfit && !tickInFlight
+            canTakeProfit
               ? "bg-success hover:bg-success/90 text-white" 
               : "bg-muted/30 text-muted-foreground cursor-not-allowed"
           )}
         >
-          <DollarSign className="h-3 w-3" />
+          {pendingAction === 'takeProfit' ? (
+            <Loader2 className="h-3 w-3 animate-spin" />
+          ) : (
+            <DollarSign className="h-3 w-3" />
+          )}
           <span className="hidden sm:inline">Take Profit</span>
         </button>
 
         {/* CLOSE ALL */}
         <button
           onClick={closeAll}
-          disabled={!canCloseAll || tickInFlight}
+          disabled={!canCloseAll}
           className={cn(
             "h-9 rounded-lg flex items-center justify-center gap-1 text-[11px] font-semibold transition-all",
-            canCloseAll && !tickInFlight
+            canCloseAll
               ? "bg-destructive hover:bg-destructive/90 text-destructive-foreground" 
               : "bg-muted/30 text-muted-foreground cursor-not-allowed"
           )}
         >
-          <XCircle className="h-3 w-3" />
+          {pendingAction === 'closeAll' ? (
+            <Loader2 className="h-3 w-3 animate-spin" />
+          ) : (
+            <XCircle className="h-3 w-3" />
+          )}
           <span className="hidden sm:inline">Close All</span>
         </button>
       </div>
