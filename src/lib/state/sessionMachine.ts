@@ -51,17 +51,17 @@ export function getButtonStates(session: SessionState): ButtonStates {
   const { status, hasPositions, tickInFlight, halted } = session;
   
   return {
-    // ACTIVATE: only when idle or stopped, not halted, not busy
-    canActivate: (status === 'idle' || status === 'stopped') && !tickInFlight && !halted,
+    // ACTIVATE: when idle, stopped, OR holding (acts as Resume from holding)
+    canActivate: (status === 'idle' || status === 'stopped' || status === 'holding') && !tickInFlight && !halted,
     
-    // HOLD: only when running (toggles to holding, or back to running)
-    canHold: (status === 'running' || status === 'holding') && !tickInFlight,
+    // HOLD: only when running
+    canHold: status === 'running' && !tickInFlight,
     
-    // TAKE PROFIT: only when hasPositions AND (running OR holding)
-    canTakeProfit: hasPositions && (status === 'running' || status === 'holding') && !tickInFlight,
+    // TAKE PROFIT: when running or holding (closes all, goes to holding)
+    canTakeProfit: (status === 'running' || status === 'holding') && !tickInFlight,
     
-    // CLOSE ALL: only when hasPositions (any active state)
-    canCloseAll: hasPositions && !tickInFlight,
+    // CLOSE ALL: any active state (closes all, goes to idle)
+    canCloseAll: (status === 'running' || status === 'holding') && !tickInFlight,
     
     // MODE CHANGE: only when idle or stopped
     canChangeMode: status === 'idle' || status === 'stopped',
@@ -71,6 +71,7 @@ export function getButtonStates(session: SessionState): ButtonStates {
 export type SessionAction = 
   | { type: 'ACTIVATE' }
   | { type: 'HOLD' }
+  | { type: 'TAKE_PROFIT' }
   | { type: 'CLOSE_ALL' }
   | { type: 'ERROR'; error: string }
   | { type: 'RESET' }
@@ -84,24 +85,30 @@ export type SessionAction =
 export function transitionSession(state: SessionState, action: SessionAction): SessionState {
   switch (action.type) {
     case 'ACTIVATE':
-      // Can only activate from idle or stopped
-      if (state.status !== 'idle' && state.status !== 'stopped') {
+      // Can activate from idle, stopped, OR holding (Resume)
+      if (state.status !== 'idle' && state.status !== 'stopped' && state.status !== 'holding') {
         return state;
       }
       return { ...state, status: 'running', lastError: null };
     
     case 'HOLD':
-      // Toggle between running and holding
+      // Only from running → holding (not a toggle)
       if (state.status === 'running') {
         return { ...state, status: 'holding' };
       }
-      if (state.status === 'holding') {
-        return { ...state, status: 'running' };
-      }
       return state;
     
+    case 'TAKE_PROFIT':
+      // Close all positions, go to holding (not idle)
+      return { 
+        ...state, 
+        status: 'holding', 
+        hasPositions: false, 
+        openCount: 0 
+      };
+    
     case 'CLOSE_ALL':
-      // Always goes to idle, clears positions
+      // Close all and go to idle (full kill switch)
       return { 
         ...state, 
         status: 'idle', 

@@ -217,13 +217,13 @@ export function ModesControlPanel() {
             </Select>
           </div>
           <div className="space-y-1.5">
-            <Label className="text-[10px] text-muted-foreground uppercase">Target: {riskSettings.dailyProfitTarget}%</Label>
+            <Label className="text-[10px] text-muted-foreground uppercase">Take Profit: {riskSettings.dailyProfitTarget}%</Label>
             <Slider
               value={[riskSettings.dailyProfitTarget]}
               onValueChange={([v]) => updateRiskSettings({ dailyProfitTarget: v })}
-              min={2}
+              min={0.25}
               max={20}
-              step={1}
+              step={0.25}
               className="py-1.5"
             />
           </div>

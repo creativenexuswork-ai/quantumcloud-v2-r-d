@@ -24,13 +24,14 @@ export function ControlBar({
 }: ControlBarProps) {
   const isRunning = status === 'running';
   const isHolding = status === 'holding';
+  const isIdle = status === 'idle' || status === 'stopped';
   const isActive = isRunning || isHolding;
 
   const handleTakeProfit = () => {
-    if (openPositionsCount === 0) {
+    if (isIdle) {
       toast({
-        title: 'No Open Positions',
-        description: 'There are no positions to close.',
+        title: 'Engine Not Active',
+        description: 'Activate the engine first.',
         variant: 'default',
       });
       return;
@@ -39,10 +40,10 @@ export function ControlBar({
   };
 
   const handleHold = () => {
-    if (status === 'idle' || status === 'stopped') {
+    if (!isRunning) {
       toast({
-        title: 'Engine Not Active',
-        description: 'Activate the engine first.',
+        title: 'Engine Not Running',
+        description: 'Hold is only available when running.',
         variant: 'default',
       });
       return;
@@ -52,13 +53,13 @@ export function ControlBar({
 
   return (
     <div className="flex items-center justify-center gap-3 py-4">
-      {/* ACTIVATE */}
+      {/* ACTIVATE / RESUME */}
       <button
         onClick={onActivate}
-        disabled={tickInFlight}
+        disabled={tickInFlight || isRunning}
         className={cn(
           "control-btn control-btn-primary",
-          isActive && "control-btn-active"
+          isRunning && "control-btn-active"
         )}
       >
         {tickInFlight ? (
@@ -66,36 +67,36 @@ export function ControlBar({
         ) : (
           <Power className="h-4 w-4" />
         )}
-        <span>ACTIVATE</span>
+        <span>{isHolding ? 'RESUME' : 'ACTIVATE'}</span>
       </button>
 
-      {/* TAKE PROFIT - slightly wider */}
+      {/* TAKE PROFIT - enabled when running or holding */}
       <button
         onClick={handleTakeProfit}
-        disabled={tickInFlight}
+        disabled={tickInFlight || isIdle}
         className="control-btn control-btn-success control-btn-wide"
       >
         <DollarSign className="h-4 w-4" />
         <span>TAKE PROFIT</span>
       </button>
 
-      {/* HOLD */}
+      {/* HOLD - only enabled when running */}
       <button
         onClick={handleHold}
-        disabled={tickInFlight}
+        disabled={tickInFlight || !isRunning}
         className={cn(
           "control-btn control-btn-outline",
           isHolding && "control-btn-holding"
         )}
       >
         <Pause className="h-4 w-4" />
-        <span>{isHolding ? 'RESUME' : 'HOLD'}</span>
+        <span>HOLD</span>
       </button>
 
-      {/* CLOSE ALL */}
+      {/* CLOSE ALL - enabled when running or holding */}
       <button
         onClick={onCloseAll}
-        disabled={tickInFlight}
+        disabled={tickInFlight || isIdle}
         className="control-btn control-btn-danger"
       >
         <XCircle className="h-4 w-4" />
