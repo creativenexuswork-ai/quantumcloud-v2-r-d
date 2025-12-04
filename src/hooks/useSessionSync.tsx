@@ -1,16 +1,18 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { usePaperStats } from './usePaperTrading';
 import { useSessionStore } from '@/lib/state/sessionMachine';
 
 /**
  * Hook to sync session data from backend paper-stats polling.
- * IMPORTANT: This hook only syncs P&L, positions, and stats.
- * It does NOT auto-start the session or change status based on backend.
- * Status changes only happen via explicit user actions (activate/hold/closeAll).
+ * Syncs P&L, positions, stats, and halted state.
+ * Also syncs session status from backend IF it's a "terminal" state (idle/stopped)
+ * to ensure Close All and Take Profit state changes are reflected.
  */
 export function useSessionSync() {
-  const { data: paperData } = usePaperStats();
+  const { data: paperData, refetch } = usePaperStats();
   const dispatch = useSessionStore((state) => state.dispatch);
+  const currentStatus = useSessionStore((state) => state.status);
+  const lastStatusRef = useRef(currentStatus);
 
   useEffect(() => {
     if (!paperData) return;
@@ -42,11 +44,20 @@ export function useSessionSync() {
       dispatch({ type: 'SET_HALTED', halted: paperData.halted });
     }
 
-    // NOTE: We intentionally do NOT sync sessionStatus from backend here.
-    // The frontend session status is controlled only by user actions.
-    // This prevents auto-start behavior on page load.
+    // Sync session status from backend ONLY for terminal states (idle/stopped)
+    // This ensures Close All properly stops the engine
+    // Don't auto-start if backend says 'running' but frontend is idle
+    const backendStatus = paperData.sessionStatus;
+    if (backendStatus === 'idle' || backendStatus === 'stopped') {
+      // If backend is idle/stopped, respect it (Close All was triggered)
+      if (currentStatus === 'running' || currentStatus === 'holding') {
+        console.log(`[SessionSync] Backend says ${backendStatus}, syncing from ${currentStatus}`);
+        dispatch({ type: 'SYNC_STATUS', status: backendStatus });
+      }
+    }
 
-  }, [paperData, dispatch]);
+    lastStatusRef.current = currentStatus;
+  }, [paperData, dispatch, currentStatus]);
 
-  return paperData;
+  return { paperData, refetch };
 }

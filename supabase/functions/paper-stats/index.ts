@@ -143,6 +143,7 @@ serve(async (req) => {
       : burstPnlPercent >= burstConfig.dailyProfitTargetPercent ? 'locked' : 'idle';
 
     const isHalted = todayPnlPercent <= -riskConfig.maxDailyLossPercent || config?.trading_halted_for_day;
+    const sessionStatus = config?.session_status || 'idle';
 
     const stats = {
       equity: startingEquity + todayPnl,
@@ -175,8 +176,10 @@ serve(async (req) => {
         use_ai_reasoning: config.use_ai_reasoning,
         show_advanced_explanations: config.show_advanced_explanations,
         is_running: config.is_running,
+        session_status: config.session_status,
       } : null,
       halted: isHalted,
+      sessionStatus,
     }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });
