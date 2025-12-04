@@ -123,11 +123,19 @@ export function useSessionActions() {
     }
   }, [queryClient, dispatch]);
 
-  // Start tick interval
+  // Start tick interval - only runs when session is RUNNING
   const startTickInterval = useCallback(() => {
     clearTickInterval();
     intervalRef.current = setInterval(async () => {
       const currentStatus = useSessionStore.getState().status;
+      const pendingAction = useSessionStore.getState().pendingAction;
+      
+      // CRITICAL: Do NOT tick if any action is pending (user clicked a button)
+      if (pendingAction) {
+        console.log(`[Tick Interval] Skipping - pending action: ${pendingAction}`);
+        return;
+      }
+      
       // Only tick if explicitly running - NOT holding, idle, or stopped
       if (currentStatus !== 'running') {
         console.log(`[Tick Interval] Skipping - status is ${currentStatus}`);
@@ -325,7 +333,12 @@ export function useSessionActions() {
     }
   }, [dispatch, clearAutoTpCheck]);
 
-  // TAKE PROFIT - Close all positions FAST, move to holding (no new trades until Activate)
+  // Immediate stats refresh helper
+  const refreshStats = useCallback(async () => {
+    await queryClient.invalidateQueries({ queryKey: ['paper-stats'] });
+  }, [queryClient]);
+
+  // TAKE PROFIT - Close all positions FAST, move to holding (no new trades until user clicks Activate)
   const takeProfit = useCallback(async () => {
     const state = useSessionStore.getState();
     
@@ -333,50 +346,49 @@ export function useSessionActions() {
       return;
     }
     
-    // Stop the tick interval - no new trades after TP
+    // IMMEDIATELY stop all tick intervals - prevent any new trades
     clearTickInterval();
     clearAutoTpCheck();
     
     dispatch({ type: 'SET_PENDING_ACTION', pendingAction: 'takeProfit' });
-    const currentMode = state.mode;
     
     // Optimistic update - show positions closed and status holding
     dispatch({ type: 'SYNC_POSITIONS', hasPositions: false, openCount: 0 });
-    dispatch({ type: 'TAKE_PROFIT' }); // This sets status to 'holding'
+    dispatch({ type: 'TAKE_PROFIT' }); // Sets status to 'holding'
     
     try {
       const { data: { user } } = await supabase.auth.getUser();
       
-      // Update database to holding state FIRST
+      // Step 1: Update DB to holding state FIRST (prevents any ticks from opening trades)
       if (user) {
         await supabase.from('paper_config').update({
           session_status: 'holding',
-          // Keep is_running true so position management still works if any remain
+          is_running: false, // Stop running so no new trades open
         } as any).eq('user_id', user.id);
       }
       
-      // Now close all positions via backend
+      // Step 2: Close all positions via backend (fast batched close)
       await runTick({ globalClose: true });
       
-      // Log the event
+      // Step 3: Log the event
       if (user) {
         await supabase.from('system_logs').insert({
           user_id: user.id,
           level: 'info',
           source: 'execution',
-          message: `SESSION: Take Profit - positions closed. ${currentMode.toUpperCase()} mode paused. Click ACTIVATE to resume.`,
+          message: `TAKE PROFIT: Positions closed. Click ACTIVATE to resume trading.`,
         });
       }
       
-      // Sync to holding state
+      // Step 4: Sync to holding state
       dispatch({ type: 'SYNC_STATUS', status: 'holding' });
       
-      // Force immediate refresh of stats
-      await queryClient.invalidateQueries({ queryKey: ['paper-stats'] });
+      // Step 5: Force immediate refresh of stats
+      await refreshStats();
       
       toast({ 
         title: 'Profit Taken', 
-        description: `Positions closed. Click ACTIVATE to resume ${currentMode.toUpperCase()} mode.` 
+        description: 'Positions closed. Click ACTIVATE to resume.' 
       });
     } catch (error) {
       console.error('Take profit error:', error);
@@ -384,11 +396,11 @@ export function useSessionActions() {
     } finally {
       dispatch({ type: 'SET_PENDING_ACTION', pendingAction: null });
     }
-  }, [dispatch, runTick, queryClient, clearTickInterval, clearAutoTpCheck]);
+  }, [dispatch, runTick, queryClient, clearTickInterval, clearAutoTpCheck, refreshStats]);
 
-  // CLOSE ALL - Emergency close and full stop (FAST)
+  // CLOSE ALL - Emergency close and full stop (FAST, NO NEW TRADES EVER)
   const closeAll = useCallback(async () => {
-    // Stop intervals FIRST to prevent any new ticks
+    // IMMEDIATELY stop all tick intervals FIRST - this is critical
     clearTickInterval();
     clearAutoTpCheck();
     
@@ -402,20 +414,22 @@ export function useSessionActions() {
     try {
       const { data: { user } } = await supabase.auth.getUser();
       
-      // CRITICAL: Update database to idle FIRST, BEFORE any tick can run
-      // This prevents race conditions where a tick sees 'running' status
+      // CRITICAL: Update database to idle FIRST, BEFORE calling runTick
+      // This prevents any race condition where a tick sees 'running' status
       if (user) {
         await supabase.from('paper_config').update({
           is_running: false,
           session_status: 'idle',
+          burst_requested: false, // Clear any pending burst request
         } as any).eq('user_id', user.id);
       }
       
       // Now call backend global close to actually close positions
+      // The backend will also set status to idle, but we've already done it above
       await runTick({ globalClose: true });
       
       // Force immediate refresh of stats
-      await queryClient.invalidateQueries({ queryKey: ['paper-stats'] });
+      await refreshStats();
       
       toast({ title: 'Session Stopped', description: 'All positions closed. Engine idle.' });
     } catch (error) {
@@ -424,7 +438,7 @@ export function useSessionActions() {
     } finally {
       dispatch({ type: 'SET_PENDING_ACTION', pendingAction: null });
     }
-  }, [dispatch, runTick, clearTickInterval, clearAutoTpCheck, queryClient]);
+  }, [dispatch, runTick, clearTickInterval, clearAutoTpCheck, refreshStats]);
 
   // Reset session
   const resetSession = useCallback(() => {

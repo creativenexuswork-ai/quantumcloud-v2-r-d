@@ -630,10 +630,16 @@ serve(async (req) => {
     const finalWins = (finalTrades || []).filter((t: any) => Number(t.realized_pnl) > 0).length;
     const finalWinRate = finalClosedCount > 0 ? (finalWins / finalClosedCount) * 100 : 50;
 
-    // Determine if we should run modes (only when status is 'running', not 'holding')
-    const shouldRunModes = currentSessionStatus === 'running' && !isHalted && !config.trading_halted_for_day && !globalClose && !takeBurstProfit;
+    // CRITICAL: Re-fetch session status right before deciding to open new trades
+    // This prevents race conditions where Close All was clicked but DB hasn't fully propagated
+    const { data: freshConfig } = await supabase.from('paper_config').select('session_status, is_running').eq('user_id', userId).maybeSingle();
+    const freshSessionStatus: SessionStatus = freshConfig?.session_status || 'idle';
+    const freshIsRunning = freshConfig?.is_running ?? false;
     
-    console.log(`[ENGINE] sessionStatus=${currentSessionStatus}, shouldRunModes=${shouldRunModes}, enabledModes=${JSON.stringify(modeConfig.enabledModes)}`);
+    // Determine if we should run modes (ONLY when status is explicitly 'running' AND is_running is true)
+    const shouldRunModes = freshSessionStatus === 'running' && freshIsRunning && !isHalted && !config.trading_halted_for_day && !globalClose && !takeBurstProfit;
+    
+    console.log(`[ENGINE] sessionStatus=${freshSessionStatus}, is_running=${freshIsRunning}, shouldRunModes=${shouldRunModes}, enabledModes=${JSON.stringify(modeConfig.enabledModes)}`);
     
     if (shouldRunModes) {
       // Calculate current ACTUAL risk exposure based on stop-loss distance
