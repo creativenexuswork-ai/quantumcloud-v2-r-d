@@ -471,59 +471,85 @@ serve(async (req) => {
       }).eq('user_id', userId);
     }
 
-    // Handle global close - close all positions and stop session
+    // Handle global close - close all positions and stop session (BATCHED for speed)
     if (globalClose) {
       const { data: allPositions } = await supabase.from('paper_positions').select('*').eq('user_id', userId).eq('closed', false);
       const closedCount = (allPositions || []).length;
       
-      for (const pos of (allPositions || [])) {
-        const tick = ticks[pos.symbol];
-        const exitPrice = tick ? (pos.side === 'long' ? tick.bid : tick.ask) : Number(pos.entry_price);
-        const priceDiff = pos.side === 'long' ? exitPrice - Number(pos.entry_price) : Number(pos.entry_price) - exitPrice;
-        const pnl = priceDiff * Number(pos.size);
-
-        await supabase.from('paper_trades').insert({
-          user_id: userId, symbol: pos.symbol, mode: pos.mode, side: pos.side,
-          size: pos.size, entry_price: pos.entry_price, exit_price: exitPrice,
-          sl: pos.sl, tp: pos.tp, opened_at: pos.opened_at,
-          realized_pnl: pnl, reason: 'global_close', session_date: today, batch_id: pos.batch_id,
+      if (closedCount > 0) {
+        // Build all trade records in memory first (no await)
+        const tradeRecords = (allPositions || []).map(pos => {
+          const tick = ticks[pos.symbol];
+          const exitPrice = tick ? (pos.side === 'long' ? tick.bid : tick.ask) : Number(pos.entry_price);
+          const priceDiff = pos.side === 'long' ? exitPrice - Number(pos.entry_price) : Number(pos.entry_price) - exitPrice;
+          const pnl = priceDiff * Number(pos.size);
+          
+          return {
+            user_id: userId, symbol: pos.symbol, mode: pos.mode, side: pos.side,
+            size: pos.size, entry_price: pos.entry_price, exit_price: exitPrice,
+            sl: pos.sl, tp: pos.tp, opened_at: pos.opened_at,
+            realized_pnl: pnl, reason: 'global_close', session_date: today, batch_id: pos.batch_id,
+          };
         });
+        
+        // Batch insert all trades + delete all positions + update config in parallel
+        await Promise.all([
+          supabase.from('paper_trades').insert(tradeRecords),
+          supabase.from('paper_positions').delete().eq('user_id', userId),
+          supabase.from('paper_config').update({ 
+            session_status: 'idle',
+            is_running: false 
+          }).eq('user_id', userId),
+          supabase.from('system_logs').insert({
+            user_id: userId, level: 'info', source: 'execution',
+            message: `SESSION: Stopped. Global close completed; ${closedCount} positions closed`,
+          }),
+        ]);
+      } else {
+        // No positions, just update config
+        await Promise.all([
+          supabase.from('paper_config').update({ 
+            session_status: 'idle',
+            is_running: false 
+          }).eq('user_id', userId),
+          supabase.from('system_logs').insert({
+            user_id: userId, level: 'info', source: 'execution',
+            message: `SESSION: Stopped. No open positions to close.`,
+          }),
+        ]);
       }
-      await supabase.from('paper_positions').delete().eq('user_id', userId);
-      
-      // Update session status to idle after global close
-      await supabase.from('paper_config').update({ 
-        session_status: 'idle',
-        is_running: false 
-      }).eq('user_id', userId);
-      
-      await supabase.from('system_logs').insert({
-        user_id: userId, level: 'info', source: 'execution',
-        message: `SESSION: Stopped. Global close completed; ${closedCount} positions closed`,
-      });
     }
 
-    // Handle take burst profit
+    // Handle take burst profit (BATCHED for speed)
     if (takeBurstProfit) {
       const { data: burstPositions } = await supabase.from('paper_positions').select('*').eq('user_id', userId).eq('mode', 'burst');
-      for (const pos of (burstPositions || [])) {
-        const tick = ticks[pos.symbol];
-        const exitPrice = tick ? (pos.side === 'long' ? tick.bid : tick.ask) : Number(pos.entry_price);
-        const priceDiff = pos.side === 'long' ? exitPrice - Number(pos.entry_price) : Number(pos.entry_price) - exitPrice;
-        const pnl = priceDiff * Number(pos.size);
-
-        await supabase.from('paper_trades').insert({
-          user_id: userId, symbol: pos.symbol, mode: pos.mode, side: pos.side,
-          size: pos.size, entry_price: pos.entry_price, exit_price: exitPrice,
-          sl: pos.sl, tp: pos.tp, opened_at: pos.opened_at,
-          realized_pnl: pnl, reason: 'take_burst_profit', session_date: today, batch_id: pos.batch_id,
+      const burstCount = (burstPositions || []).length;
+      
+      if (burstCount > 0) {
+        const burstIds = (burstPositions || []).map(p => p.id);
+        const tradeRecords = (burstPositions || []).map(pos => {
+          const tick = ticks[pos.symbol];
+          const exitPrice = tick ? (pos.side === 'long' ? tick.bid : tick.ask) : Number(pos.entry_price);
+          const priceDiff = pos.side === 'long' ? exitPrice - Number(pos.entry_price) : Number(pos.entry_price) - exitPrice;
+          const pnl = priceDiff * Number(pos.size);
+          
+          return {
+            user_id: userId, symbol: pos.symbol, mode: pos.mode, side: pos.side,
+            size: pos.size, entry_price: pos.entry_price, exit_price: exitPrice,
+            sl: pos.sl, tp: pos.tp, opened_at: pos.opened_at,
+            realized_pnl: pnl, reason: 'take_burst_profit', session_date: today, batch_id: pos.batch_id,
+          };
         });
-        await supabase.from('paper_positions').delete().eq('id', pos.id);
+        
+        await Promise.all([
+          supabase.from('paper_trades').insert(tradeRecords),
+          supabase.from('paper_positions').delete().in('id', burstIds),
+          supabase.from('system_logs').insert({
+            user_id: userId, level: 'info', source: 'burst',
+            message: `BURST: Take profit - ${burstCount} burst positions closed`,
+          }),
+        ]);
       }
-      await supabase.from('system_logs').insert({
-        user_id: userId, level: 'info', source: 'burst',
-        message: `BURST: Take profit - ${(burstPositions || []).length} burst positions closed`,
-      });
     }
 
     // Update burst requested flag

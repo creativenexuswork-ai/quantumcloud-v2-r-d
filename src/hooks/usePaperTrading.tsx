@@ -8,6 +8,7 @@ import { useSession, SessionStatus } from '@/lib/state/session';
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const TICK_INTERVAL_MS = 4000;
+const STATS_REFRESH_MS = 1000; // P&L refresh every 1 second
 
 export interface PaperStats {
   equity: number;
@@ -129,9 +130,9 @@ export function usePaperStats() {
       }>;
     },
     enabled: !!session,
-    refetchInterval: 4000,
+    refetchInterval: STATS_REFRESH_MS, // Fast 1s P&L refresh
     retry: 2,
-    staleTime: 2000,
+    staleTime: 500, // Consider data stale after 500ms for faster updates
   });
 }
 

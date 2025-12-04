@@ -7,7 +7,8 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useTradingState } from './useSessionState';
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
-const TICK_INTERVAL_MS = 4000;
+const TICK_INTERVAL_MS = 3000; // Trading tick interval (mode logic)
+const FAST_REFRESH_MS = 500; // Fast refresh after close operations
 
 // Map UI mode to backend mode
 const MODE_TO_BACKEND: Record<TradingMode, string> = {
@@ -305,7 +306,7 @@ export function useSessionActions() {
     }
   }, [dispatch, clearAutoTpCheck]);
 
-  // TAKE PROFIT - Close all positions, then auto-resume same mode
+  // TAKE PROFIT - Close all positions FAST, then auto-resume same mode
   const takeProfit = useCallback(async () => {
     const state = useSessionStore.getState();
     
@@ -314,45 +315,42 @@ export function useSessionActions() {
     }
     
     dispatch({ type: 'SET_PENDING_ACTION', pendingAction: 'takeProfit' });
+    const currentMode = state.mode; // Save current mode for resume
+    
+    // Immediately update local state to reflect "closing" (optimistic update)
+    dispatch({ type: 'SYNC_POSITIONS', hasPositions: false, openCount: 0 });
     
     try {
-      const currentMode = state.mode; // Save current mode for resume
+      // Call backend global close (now batched and fast)
+      const closePromise = runTick({ globalClose: true });
       
-      // Close all positions immediately
-      await runTick({ globalClose: true });
+      // Get user and prepare resume updates in parallel
+      const userPromise = supabase.auth.getUser();
       
-      const { data: { user } } = await supabase.auth.getUser();
+      await closePromise; // Wait for close to complete
+      
+      const { data: { user } } = await userPromise;
       if (user) {
-        // Log the take profit
-        await supabase.from('system_logs').insert({
-          user_id: user.id,
-          level: 'info',
-          source: 'execution',
-          message: `SESSION: Take Profit - positions closed, resuming ${currentMode.toUpperCase()} mode`,
-        });
-        
-        // Keep session running with same mode
-        await supabase.from('paper_config').update({
-          is_running: true,
-          session_status: 'running',
-        } as any).eq('user_id', user.id);
+        // Update to running state and log - in parallel
+        await Promise.all([
+          supabase.from('paper_config').update({
+            is_running: true,
+            session_status: 'running',
+          } as any).eq('user_id', user.id),
+          supabase.from('system_logs').insert({
+            user_id: user.id,
+            level: 'info',
+            source: 'execution',
+            message: `SESSION: Take Profit - positions closed, resuming ${currentMode.toUpperCase()} mode`,
+          }),
+        ]);
       }
       
-      // Force refresh stats
-      queryClient.invalidateQueries({ queryKey: ['paper-stats'] });
-      
-      // Update local state - keep running, just reset positions
-      dispatch({ 
-        type: 'SYNC_POSITIONS', 
-        hasPositions: false,
-        openCount: 0
-      });
-      
-      // Ensure we stay in running state (not holding)
+      // Ensure we stay in running state
       dispatch({ type: 'SYNC_STATUS', status: 'running' });
       
-      // Start a new tick cycle immediately
-      await runTick();
+      // Force fast refresh of stats
+      queryClient.invalidateQueries({ queryKey: ['paper-stats'] });
       
       toast({ title: 'Profit Taken', description: `Positions closed. ${currentMode.toUpperCase()} mode continues.` });
     } catch (error) {
@@ -363,7 +361,7 @@ export function useSessionActions() {
     }
   }, [dispatch, runTick, queryClient]);
 
-  // CLOSE ALL - Emergency close and full stop
+  // CLOSE ALL - Emergency close and full stop (FAST)
   const closeAll = useCallback(async () => {
     // Stop intervals FIRST to prevent any new ticks
     clearTickInterval();
@@ -371,37 +369,18 @@ export function useSessionActions() {
     
     dispatch({ type: 'SET_PENDING_ACTION', pendingAction: 'closeAll' });
     
+    // Optimistic update - immediately show positions closed
+    dispatch({ type: 'CLOSE_ALL' });
+    dispatch({ type: 'SYNC_POSITIONS', hasPositions: false, openCount: 0 });
+    
     try {
-      // Close all positions immediately (don't check if positions exist, just close)
+      // Start the backend global close (now batched and fast)
+      // The edge function handles state update to 'idle' internally
       await runTick({ globalClose: true });
       
-      const { data: { user } } = await supabase.auth.getUser();
-      if (user) {
-        // Update backend to idle - run in parallel for speed
-        const updatePromise = supabase.from('paper_config').update({
-          is_running: false,
-          session_status: 'idle',
-        } as any).eq('user_id', user.id);
-        
-        const logPromise = supabase.from('system_logs').insert({
-          user_id: user.id,
-          level: 'warn',
-          source: 'execution',
-          message: 'SESSION: CLOSE ALL - session stopped completely',
-        });
-        
-        await Promise.all([updatePromise, logPromise]);
-      }
-      
-      // Update local state immediately
-      dispatch({ type: 'CLOSE_ALL' });
-      dispatch({ 
-        type: 'SYNC_POSITIONS', 
-        hasPositions: false,
-        openCount: 0
-      });
-      
+      // Force fast refresh of stats
       queryClient.invalidateQueries({ queryKey: ['paper-stats'] });
+      
       toast({ title: 'Session Stopped', description: 'All positions closed. Engine idle.' });
     } catch (error) {
       console.error('Close all error:', error);
