@@ -4,6 +4,7 @@ import { useAuth } from './useAuth';
 import { toast } from './use-toast';
 import { useSessionStore, TradingMode, getButtonStates } from '@/lib/state/sessionMachine';
 import { useQueryClient } from '@tanstack/react-query';
+import { useTradingState } from './useSessionState';
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const TICK_INTERVAL_MS = 4000;
@@ -20,17 +21,29 @@ export function useSessionActions() {
   const queryClient = useQueryClient();
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
   const tickInFlightRef = useRef(false);
+  const autoTpCheckRef = useRef<NodeJS.Timeout | null>(null);
   
   // Get state and dispatch from store
   const sessionState = useSessionStore();
   const { dispatch } = sessionState;
   const buttonStates = getButtonStates(sessionState);
+  
+  // Get risk settings for auto TP
+  const { riskSettings } = useTradingState();
 
   // Clear tick interval
   const clearTickInterval = useCallback(() => {
     if (intervalRef.current) {
       clearInterval(intervalRef.current);
       intervalRef.current = null;
+    }
+  }, []);
+
+  // Clear auto TP check
+  const clearAutoTpCheck = useCallback(() => {
+    if (autoTpCheckRef.current) {
+      clearInterval(autoTpCheckRef.current);
+      autoTpCheckRef.current = null;
     }
   }, []);
 
@@ -66,6 +79,22 @@ export function useSessionActions() {
         dispatch({ type: 'SET_HALTED', halted: data.halted });
       }
       
+      // Sync positions count
+      if (data.stats) {
+        dispatch({ 
+          type: 'SYNC_POSITIONS', 
+          hasPositions: (data.stats.openPositionsCount || 0) > 0,
+          openCount: data.stats.openPositionsCount || 0
+        });
+        dispatch({
+          type: 'SYNC_PNL',
+          pnlToday: data.stats.todayPnl || 0,
+          tradesToday: data.stats.tradesToday || 0,
+          winRate: data.stats.winRate || 0,
+          equity: data.stats.equity || 10000,
+        });
+      }
+      
       queryClient.invalidateQueries({ queryKey: ['paper-stats'] });
       
       return data;
@@ -93,12 +122,63 @@ export function useSessionActions() {
           variant: 'destructive',
         });
         clearTickInterval();
+        clearAutoTpCheck();
         dispatch({ type: 'SET_HALTED', halted: true });
       }
     }, TICK_INTERVAL_MS);
-  }, [runTick, clearTickInterval, dispatch]);
+  }, [runTick, clearTickInterval, clearAutoTpCheck, dispatch]);
 
-  // ACTIVATE - Start trading session
+  // Auto TP check - runs while engine is active
+  const startAutoTpCheck = useCallback(() => {
+    clearAutoTpCheck();
+    
+    autoTpCheckRef.current = setInterval(async () => {
+      const state = useSessionStore.getState();
+      const { riskSettings: currentRiskSettings } = useTradingState.getState();
+      
+      // Only check auto TP when running
+      if (state.status !== 'running') return;
+      
+      // Get current P&L data
+      const { data: stats } = await supabase.functions.invoke('paper-stats');
+      if (!stats?.stats) return;
+      
+      const equity = stats.stats.equity || 10000;
+      const todayPnlPercent = stats.stats.todayPnlPercent || 0;
+      const tpTarget = currentRiskSettings.dailyProfitTarget;
+      
+      // Check if we hit the TP target
+      if (todayPnlPercent >= tpTarget && stats.stats.openPositionsCount > 0) {
+        console.log(`[AUTO-TP] Target hit: ${todayPnlPercent.toFixed(2)}% >= ${tpTarget}%. Closing and restarting cycle.`);
+        
+        // Close all positions
+        await runTick({ globalClose: true });
+        
+        // Log the auto TP event
+        const { data: { user } } = await supabase.auth.getUser();
+        if (user) {
+          await supabase.from('system_logs').insert({
+            user_id: user.id,
+            level: 'info',
+            source: 'execution',
+            message: `AUTO-TP: Target ${tpTarget}% reached (${todayPnlPercent.toFixed(2)}%). Positions closed, restarting cycle.`,
+          });
+        }
+        
+        toast({ 
+          title: 'Auto Take Profit', 
+          description: `Target ${tpTarget}% reached. Cycle restarting.` 
+        });
+        
+        // Immediately start a new cycle (state stays "running")
+        await runTick();
+        
+        queryClient.invalidateQueries({ queryKey: ['paper-stats'] });
+      }
+    }, TICK_INTERVAL_MS * 2); // Check every 8 seconds
+  }, [runTick, queryClient, clearAutoTpCheck]);
+
+  // ACTIVATE - Start trading session OR Resume from holding
   const activate = useCallback(async () => {
     const state = useSessionStore.getState();
     
@@ -107,9 +187,12 @@ export function useSessionActions() {
       return;
     }
     
-    if (state.status !== 'idle' && state.status !== 'stopped') {
+    // Can activate from idle, stopped, or holding
+    if (state.status !== 'idle' && state.status !== 'stopped' && state.status !== 'holding') {
       return;
     }
+    
+    const wasHolding = state.status === 'holding';
     
     try {
       const { data: { user } } = await supabase.auth.getUser();
@@ -126,7 +209,7 @@ export function useSessionActions() {
       await supabase.from('paper_config').update({
         is_running: true,
         session_status: 'running',
-        session_started_at: new Date().toISOString(),
+        session_started_at: wasHolding ? undefined : new Date().toISOString(),
         mode_config: {
           enabledModes: [backendMode],
           modeSettings: {},
@@ -137,7 +220,9 @@ export function useSessionActions() {
         user_id: user.id,
         level: 'info',
         source: 'execution',
-        message: `SESSION: Started - ${state.mode.toUpperCase()} mode active`,
+        message: wasHolding 
+          ? `SESSION: Resumed - ${state.mode.toUpperCase()} mode active`
+          : `SESSION: Started - ${state.mode.toUpperCase()} mode active`,
       });
 
       // Run immediate tick
@@ -158,19 +243,25 @@ export function useSessionActions() {
       }
       
       startTickInterval();
-      toast({ title: 'Session Activated', description: `${state.mode.toUpperCase()} mode running` });
+      startAutoTpCheck();
+      
+      toast({ 
+        title: wasHolding ? 'Session Resumed' : 'Session Activated', 
+        description: `${state.mode.toUpperCase()} mode running` 
+      });
     } catch (error) {
       console.error('Activate error:', error);
       dispatch({ type: 'ERROR', error: 'Failed to start session' });
       toast({ title: 'Error', description: 'Failed to activate session', variant: 'destructive' });
     }
-  }, [dispatch, runTick, startTickInterval]);
+  }, [dispatch, runTick, startTickInterval, startAutoTpCheck]);
 
-  // HOLD - Toggle between running and holding
+  // HOLD - Stop opening new trades, but manage existing positions
   const holdToggle = useCallback(async () => {
     const state = useSessionStore.getState();
     
-    if (state.status !== 'running' && state.status !== 'holding') {
+    // Only allow hold from running state
+    if (state.status !== 'running') {
       return;
     }
     
@@ -178,41 +269,35 @@ export function useSessionActions() {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
 
-      const newStatus = state.status === 'running' ? 'holding' : 'running';
-      
       await supabase.from('paper_config').update({
-        session_status: newStatus,
+        session_status: 'holding',
       } as any).eq('user_id', user.id);
 
       await supabase.from('system_logs').insert({
         user_id: user.id,
         level: 'info',
         source: 'execution',
-        message: newStatus === 'holding' 
-          ? 'SESSION: Holding - no new trades; managing existing positions'
-          : 'SESSION: Resumed - trading engine active',
+        message: 'SESSION: Holding - no new trades; managing existing positions',
       });
 
       dispatch({ type: 'HOLD' });
       
+      // Keep tick interval running for position management, but stop auto TP cycling
+      clearAutoTpCheck();
+      
       toast({ 
-        title: newStatus === 'holding' ? 'Session On Hold' : 'Session Resumed',
-        description: newStatus === 'holding' ? 'Managing existing positions only' : 'Trading engine active'
+        title: 'Session On Hold',
+        description: 'Managing existing positions only. Click ACTIVATE to resume.'
       });
     } catch (error) {
-      console.error('Hold toggle error:', error);
-      toast({ title: 'Error', description: 'Failed to toggle hold', variant: 'destructive' });
+      console.error('Hold error:', error);
+      toast({ title: 'Error', description: 'Failed to hold session', variant: 'destructive' });
     }
-  }, [dispatch]);
+  }, [dispatch, clearAutoTpCheck]);
 
-  // TAKE PROFIT - Close all positions
+  // TAKE PROFIT - Close all positions, go to holding
   const takeProfit = useCallback(async () => {
     const state = useSessionStore.getState();
-    
-    if (!state.hasPositions) {
-      toast({ title: 'No Positions', description: 'No open positions to close' });
-      return;
-    }
     
     if (state.status !== 'running' && state.status !== 'holding') {
       return;
@@ -221,50 +306,51 @@ export function useSessionActions() {
     try {
       dispatch({ type: 'SET_TICK_IN_FLIGHT', tickInFlight: true });
       
-      const result = await runTick({ takeBurstProfit: true });
+      // Close all positions
+      await runTick({ globalClose: true });
       
-      if (result) {
-        // Stop the session after taking profit
-        clearTickInterval();
+      const { data: { user } } = await supabase.auth.getUser();
+      if (user) {
+        // Go to holding state (not idle)
+        await supabase.from('paper_config').update({
+          session_status: 'holding',
+        } as any).eq('user_id', user.id);
         
-        const { data: { user } } = await supabase.auth.getUser();
-        if (user) {
-          await supabase.from('paper_config').update({
-            is_running: false,
-            session_status: 'idle',
-          } as any).eq('user_id', user.id);
-          
-          await supabase.from('system_logs').insert({
-            user_id: user.id,
-            level: 'info',
-            source: 'execution',
-            message: 'SESSION: Take Profit executed - all positions closed',
-          });
-        }
-        
-        dispatch({ type: 'CLOSE_ALL' });
-        queryClient.invalidateQueries({ queryKey: ['paper-stats'] });
-        toast({ title: 'Profit Taken', description: 'All positions closed' });
+        await supabase.from('system_logs').insert({
+          user_id: user.id,
+          level: 'info',
+          source: 'execution',
+          message: 'SESSION: Take Profit - all positions closed. Engine on hold.',
+        });
       }
+      
+      // Transition to holding (positions closed but session still "alive")
+      dispatch({ type: 'TAKE_PROFIT' });
+      clearAutoTpCheck();
+      
+      queryClient.invalidateQueries({ queryKey: ['paper-stats'] });
+      toast({ title: 'Profit Taken', description: 'All positions closed. Click ACTIVATE to resume trading.' });
     } catch (error) {
       console.error('Take profit error:', error);
       toast({ title: 'Error', description: 'Failed to take profit', variant: 'destructive' });
     } finally {
       dispatch({ type: 'SET_TICK_IN_FLIGHT', tickInFlight: false });
     }
-  }, [dispatch, runTick, clearTickInterval, queryClient]);
+  }, [dispatch, runTick, clearAutoTpCheck, queryClient]);
 
-  // CLOSE ALL - Emergency close and stop
+  // CLOSE ALL - Emergency close and full stop
   const closeAll = useCallback(async () => {
-    const state = useSessionStore.getState();
-    
-    // Stop interval first
+    // Stop intervals first
     clearTickInterval();
+    clearAutoTpCheck();
     
     try {
       dispatch({ type: 'SET_TICK_IN_FLIGHT', tickInFlight: true });
       
-      if (state.hasPositions) {
+      const state = useSessionStore.getState();
+      
+      // Close all positions if any
+      if (state.hasPositions || state.openCount > 0) {
         await runTick({ globalClose: true });
       }
       
@@ -279,26 +365,27 @@ export function useSessionActions() {
           user_id: user.id,
           level: 'warn',
           source: 'execution',
-          message: 'SESSION: CLOSE ALL executed - session stopped',
+          message: 'SESSION: CLOSE ALL - session stopped completely',
         });
       }
       
       dispatch({ type: 'CLOSE_ALL' });
       queryClient.invalidateQueries({ queryKey: ['paper-stats'] });
-      toast({ title: 'Session Stopped', description: state.hasPositions ? 'All positions closed' : undefined });
+      toast({ title: 'Session Stopped', description: 'All positions closed. Engine idle.' });
     } catch (error) {
       console.error('Close all error:', error);
       toast({ title: 'Error', description: 'Failed to close positions', variant: 'destructive' });
     } finally {
       dispatch({ type: 'SET_TICK_IN_FLIGHT', tickInFlight: false });
     }
-  }, [dispatch, runTick, clearTickInterval, queryClient]);
+  }, [dispatch, runTick, clearTickInterval, clearAutoTpCheck, queryClient]);
 
   // Reset session
   const resetSession = useCallback(() => {
     clearTickInterval();
+    clearAutoTpCheck();
     dispatch({ type: 'RESET' });
-  }, [dispatch, clearTickInterval]);
+  }, [dispatch, clearTickInterval, clearAutoTpCheck]);
 
   // Change trading mode
   const changeMode = useCallback(async (newMode: TradingMode) => {
@@ -345,14 +432,9 @@ export function useSessionActions() {
           dispatch({ type: 'SET_HALTED', halted: config.trading_halted_for_day || false });
           
           // IMPORTANT: Do NOT auto-start. Always start in idle.
-          // The backend status is informational only - user must click ACTIVATE
-          // to start trading.
-          
-          // If backend says running but we just loaded, we should NOT auto-run.
-          // User must explicitly activate. Reset backend to idle.
+          // Reset backend to idle since we're not auto-starting
           const backendStatus = (config as any).session_status;
           if (backendStatus === 'running' || backendStatus === 'holding') {
-            // Reset backend to idle since we're not auto-starting
             await supabase.from('paper_config').update({
               is_running: false,
               session_status: 'idle',
@@ -372,8 +454,9 @@ export function useSessionActions() {
     return () => {
       mounted = false;
       clearTickInterval();
+      clearAutoTpCheck();
     };
-  }, [authSession?.user?.id, dispatch, clearTickInterval]);
+  }, [authSession?.user?.id, dispatch, clearTickInterval, clearAutoTpCheck]);
 
   return {
     // Session state

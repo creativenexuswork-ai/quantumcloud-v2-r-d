@@ -95,7 +95,7 @@ export const useTradingState = create<TradingState>((set, get) => ({
     maxDailyDrawdown: 5,
     maxPerTradeRisk: 1,
     positionSizingMode: 'percent',
-    dailyProfitTarget: 8,
+    dailyProfitTarget: 1, // Default 1% for auto TP
   },
   
   modeConfig: {
@@ -138,7 +138,7 @@ export const useTradingState = create<TradingState>((set, get) => ({
         maxDailyDrawdown: riskConfig.maxDailyLossPercent || 5,
         maxPerTradeRisk: riskConfig.maxPerTradeRiskPercent || 1,
         positionSizingMode: 'percent',
-        dailyProfitTarget: burstConfig.dailyProfitTargetPercent || 8,
+        dailyProfitTarget: burstConfig.dailyProfitTargetPercent || 1, // Default 1%
       },
       modeConfig: {
         burstTradesPerRun: burstConfig.size || 20,
