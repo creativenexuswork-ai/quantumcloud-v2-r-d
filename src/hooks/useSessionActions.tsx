@@ -52,6 +52,16 @@ export function useSessionActions() {
   const runTick = useCallback(async (options?: { globalClose?: boolean; takeBurstProfit?: boolean }) => {
     if (tickInFlightRef.current) return null;
     
+    // CRITICAL: Before running tick, check if session is still running
+    // Skip regular ticks if session is idle/stopped (but allow globalClose through)
+    const currentStatus = useSessionStore.getState().status;
+    if (!options?.globalClose && !options?.takeBurstProfit) {
+      if (currentStatus !== 'running' && currentStatus !== 'holding') {
+        console.log(`[runTick] Skipping tick - session status is ${currentStatus}`);
+        return null;
+      }
+    }
+    
     tickInFlightRef.current = true;
     // NOTE: We no longer dispatch SET_PENDING_ACTION here - polling is silent
     
@@ -78,6 +88,11 @@ export function useSessionActions() {
       // Sync halted state
       if (data.halted !== undefined) {
         dispatch({ type: 'SET_HALTED', halted: data.halted });
+      }
+      
+      // Sync session status from backend (important for Close All)
+      if (data.sessionStatus) {
+        dispatch({ type: 'SYNC_STATUS', status: data.sessionStatus });
       }
       
       // Sync positions count
@@ -113,7 +128,11 @@ export function useSessionActions() {
     clearTickInterval();
     intervalRef.current = setInterval(async () => {
       const currentStatus = useSessionStore.getState().status;
-      if (currentStatus !== 'running' && currentStatus !== 'holding') return;
+      // Only tick if explicitly running - NOT holding, idle, or stopped
+      if (currentStatus !== 'running') {
+        console.log(`[Tick Interval] Skipping - status is ${currentStatus}`);
+        return;
+      }
       
       const result = await runTick();
       if (result?.halted) {
@@ -306,7 +325,7 @@ export function useSessionActions() {
     }
   }, [dispatch, clearAutoTpCheck]);
 
-  // TAKE PROFIT - Close all positions FAST, then auto-resume same mode
+  // TAKE PROFIT - Close all positions FAST, move to holding (no new trades until Activate)
   const takeProfit = useCallback(async () => {
     const state = useSessionStore.getState();
     
@@ -314,52 +333,58 @@ export function useSessionActions() {
       return;
     }
     
-    dispatch({ type: 'SET_PENDING_ACTION', pendingAction: 'takeProfit' });
-    const currentMode = state.mode; // Save current mode for resume
+    // Stop the tick interval - no new trades after TP
+    clearTickInterval();
+    clearAutoTpCheck();
     
-    // Immediately update local state to reflect "closing" (optimistic update)
+    dispatch({ type: 'SET_PENDING_ACTION', pendingAction: 'takeProfit' });
+    const currentMode = state.mode;
+    
+    // Optimistic update - show positions closed and status holding
     dispatch({ type: 'SYNC_POSITIONS', hasPositions: false, openCount: 0 });
+    dispatch({ type: 'TAKE_PROFIT' }); // This sets status to 'holding'
     
     try {
-      // Call backend global close (now batched and fast)
-      const closePromise = runTick({ globalClose: true });
+      const { data: { user } } = await supabase.auth.getUser();
       
-      // Get user and prepare resume updates in parallel
-      const userPromise = supabase.auth.getUser();
-      
-      await closePromise; // Wait for close to complete
-      
-      const { data: { user } } = await userPromise;
+      // Update database to holding state FIRST
       if (user) {
-        // Update to running state and log - in parallel
-        await Promise.all([
-          supabase.from('paper_config').update({
-            is_running: true,
-            session_status: 'running',
-          } as any).eq('user_id', user.id),
-          supabase.from('system_logs').insert({
-            user_id: user.id,
-            level: 'info',
-            source: 'execution',
-            message: `SESSION: Take Profit - positions closed, resuming ${currentMode.toUpperCase()} mode`,
-          }),
-        ]);
+        await supabase.from('paper_config').update({
+          session_status: 'holding',
+          // Keep is_running true so position management still works if any remain
+        } as any).eq('user_id', user.id);
       }
       
-      // Ensure we stay in running state
-      dispatch({ type: 'SYNC_STATUS', status: 'running' });
+      // Now close all positions via backend
+      await runTick({ globalClose: true });
       
-      // Force fast refresh of stats
-      queryClient.invalidateQueries({ queryKey: ['paper-stats'] });
+      // Log the event
+      if (user) {
+        await supabase.from('system_logs').insert({
+          user_id: user.id,
+          level: 'info',
+          source: 'execution',
+          message: `SESSION: Take Profit - positions closed. ${currentMode.toUpperCase()} mode paused. Click ACTIVATE to resume.`,
+        });
+      }
       
-      toast({ title: 'Profit Taken', description: `Positions closed. ${currentMode.toUpperCase()} mode continues.` });
+      // Sync to holding state
+      dispatch({ type: 'SYNC_STATUS', status: 'holding' });
+      
+      // Force immediate refresh of stats
+      await queryClient.invalidateQueries({ queryKey: ['paper-stats'] });
+      
+      toast({ 
+        title: 'Profit Taken', 
+        description: `Positions closed. Click ACTIVATE to resume ${currentMode.toUpperCase()} mode.` 
+      });
     } catch (error) {
       console.error('Take profit error:', error);
       toast({ title: 'Error', description: 'Failed to take profit', variant: 'destructive' });
     } finally {
       dispatch({ type: 'SET_PENDING_ACTION', pendingAction: null });
     }
-  }, [dispatch, runTick, queryClient]);
+  }, [dispatch, runTick, queryClient, clearTickInterval, clearAutoTpCheck]);
 
   // CLOSE ALL - Emergency close and full stop (FAST)
   const closeAll = useCallback(async () => {
@@ -369,17 +394,28 @@ export function useSessionActions() {
     
     dispatch({ type: 'SET_PENDING_ACTION', pendingAction: 'closeAll' });
     
-    // Optimistic update - immediately show positions closed
+    // Optimistic update - immediately show positions closed and status idle
     dispatch({ type: 'CLOSE_ALL' });
     dispatch({ type: 'SYNC_POSITIONS', hasPositions: false, openCount: 0 });
+    dispatch({ type: 'SYNC_STATUS', status: 'idle' });
     
     try {
-      // Start the backend global close (now batched and fast)
-      // The edge function handles state update to 'idle' internally
+      const { data: { user } } = await supabase.auth.getUser();
+      
+      // CRITICAL: Update database to idle FIRST, BEFORE any tick can run
+      // This prevents race conditions where a tick sees 'running' status
+      if (user) {
+        await supabase.from('paper_config').update({
+          is_running: false,
+          session_status: 'idle',
+        } as any).eq('user_id', user.id);
+      }
+      
+      // Now call backend global close to actually close positions
       await runTick({ globalClose: true });
       
-      // Force fast refresh of stats
-      queryClient.invalidateQueries({ queryKey: ['paper-stats'] });
+      // Force immediate refresh of stats
+      await queryClient.invalidateQueries({ queryKey: ['paper-stats'] });
       
       toast({ title: 'Session Stopped', description: 'All positions closed. Engine idle.' });
     } catch (error) {
