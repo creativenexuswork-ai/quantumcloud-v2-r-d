@@ -5,6 +5,9 @@ export type SessionStatus = 'idle' | 'running' | 'holding' | 'stopped' | 'error'
 export type TradingMode = 'burst' | 'scalper' | 'trend';
 export type AccountType = 'paper' | 'live';
 
+// pendingAction is set ONLY during explicit user actions, NOT during polling
+export type PendingAction = 'activate' | 'hold' | 'takeProfit' | 'closeAll' | null;
+
 export interface SessionState {
   status: SessionStatus;
   mode: TradingMode;
@@ -17,7 +20,8 @@ export interface SessionState {
   equity: number;
   lastError: string | null;
   halted: boolean;
-  tickInFlight: boolean;
+  // pendingAction: set only during user-initiated transitions (not polling)
+  pendingAction: PendingAction;
 }
 
 export interface ButtonStates {
@@ -26,6 +30,7 @@ export interface ButtonStates {
   canTakeProfit: boolean;
   canCloseAll: boolean;
   canChangeMode: boolean;
+  showSpinner: boolean;
 }
 
 // ============== Pure Helper Functions ==============
@@ -43,28 +48,34 @@ export function getInitialSessionState(): SessionState {
     equity: 10000,
     lastError: null,
     halted: false,
-    tickInFlight: false,
+    pendingAction: null,
   };
 }
 
 export function getButtonStates(session: SessionState): ButtonStates {
-  const { status, hasPositions, tickInFlight, halted } = session;
+  const { status, hasPositions, pendingAction, halted, openCount } = session;
+  
+  // Buttons are disabled during ANY pending action
+  const isBusy = pendingAction !== null;
   
   return {
     // ACTIVATE: when idle, stopped, OR holding (acts as Resume from holding)
-    canActivate: (status === 'idle' || status === 'stopped' || status === 'holding') && !tickInFlight && !halted,
+    canActivate: (status === 'idle' || status === 'stopped' || status === 'holding') && !isBusy && !halted,
     
     // HOLD: only when running
-    canHold: status === 'running' && !tickInFlight,
+    canHold: status === 'running' && !isBusy,
     
-    // TAKE PROFIT: when running or holding (closes all, goes to holding)
-    canTakeProfit: (status === 'running' || status === 'holding') && !tickInFlight,
+    // TAKE PROFIT: when running or holding AND has positions
+    canTakeProfit: (status === 'running' || status === 'holding') && !isBusy && (hasPositions || openCount > 0),
     
     // CLOSE ALL: any active state (closes all, goes to idle)
-    canCloseAll: (status === 'running' || status === 'holding') && !tickInFlight,
+    canCloseAll: (status === 'running' || status === 'holding') && !isBusy,
     
     // MODE CHANGE: only when idle or stopped
     canChangeMode: status === 'idle' || status === 'stopped',
+    
+    // Spinner shows ONLY during user-initiated actions
+    showSpinner: isBusy,
   };
 }
 
@@ -79,7 +90,7 @@ export type SessionAction =
   | { type: 'SYNC_POSITIONS'; hasPositions: boolean; openCount: number }
   | { type: 'SYNC_PNL'; pnlToday: number; tradesToday: number; winRate: number; equity: number }
   | { type: 'SET_HALTED'; halted: boolean }
-  | { type: 'SET_TICK_IN_FLIGHT'; tickInFlight: boolean }
+  | { type: 'SET_PENDING_ACTION'; pendingAction: PendingAction }
   | { type: 'SYNC_STATUS'; status: SessionStatus };
 
 export function transitionSession(state: SessionState, action: SessionAction): SessionState {
@@ -153,12 +164,13 @@ export function transitionSession(state: SessionState, action: SessionAction): S
       return { 
         ...state, 
         halted: action.halted,
-        // If halted, also set to idle
+        // If halted, also set to idle and clear pending action
         status: action.halted ? 'idle' : state.status,
+        pendingAction: action.halted ? null : state.pendingAction,
       };
     
-    case 'SET_TICK_IN_FLIGHT':
-      return { ...state, tickInFlight: action.tickInFlight };
+    case 'SET_PENDING_ACTION':
+      return { ...state, pendingAction: action.pendingAction };
     
     case 'SYNC_STATUS':
       // Only sync if it's a valid backend status

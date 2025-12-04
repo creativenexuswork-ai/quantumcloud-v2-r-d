@@ -20,8 +20,9 @@ export function ModesControlPanel() {
     tradesToday,
   } = useFullSessionState();
 
-  const { status, mode, openCount, tickInFlight } = useSessionStore();
+  const { status, mode, openCount, pendingAction } = useSessionStore();
   const { buttonStates, activate, holdToggle, takeProfit, closeAll, changeMode } = useSessionActions();
+  const { showSpinner } = buttonStates;
 
   // Only show controls for the 3 core modes
   const showBurstScalperControls = mode === 'burst' || mode === 'scalper';
@@ -46,7 +47,8 @@ export function ModesControlPanel() {
       <ControlBar
         status={status}
         openPositionsCount={openCount}
-        tickInFlight={tickInFlight}
+        showSpinner={showSpinner}
+        pendingAction={pendingAction}
         onActivate={activate}
         onTakeProfit={takeProfit}
         onHold={holdToggle}

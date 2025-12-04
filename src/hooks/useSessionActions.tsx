@@ -47,12 +47,12 @@ export function useSessionActions() {
     }
   }, []);
 
-  // Run a single tick
+  // Run a single tick - NO LONGER touches pendingAction (that's for user actions only)
   const runTick = useCallback(async (options?: { globalClose?: boolean; takeBurstProfit?: boolean }) => {
     if (tickInFlightRef.current) return null;
     
     tickInFlightRef.current = true;
-    dispatch({ type: 'SET_TICK_IN_FLIGHT', tickInFlight: true });
+    // NOTE: We no longer dispatch SET_PENDING_ACTION here - polling is silent
     
     try {
       const { data: { session: currentSession } } = await supabase.auth.getSession();
@@ -103,7 +103,7 @@ export function useSessionActions() {
       return null;
     } finally {
       tickInFlightRef.current = false;
-      dispatch({ type: 'SET_TICK_IN_FLIGHT', tickInFlight: false });
+      // NOTE: We no longer dispatch SET_PENDING_ACTION here - polling is silent
     }
   }, [queryClient, dispatch]);
 
@@ -194,6 +194,9 @@ export function useSessionActions() {
     
     const wasHolding = state.status === 'holding';
     
+    // Set pending action for spinner
+    dispatch({ type: 'SET_PENDING_ACTION', pendingAction: 'activate' });
+    
     try {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) {
@@ -253,6 +256,9 @@ export function useSessionActions() {
       console.error('Activate error:', error);
       dispatch({ type: 'ERROR', error: 'Failed to start session' });
       toast({ title: 'Error', description: 'Failed to activate session', variant: 'destructive' });
+    } finally {
+      // Always clear pending action when done
+      dispatch({ type: 'SET_PENDING_ACTION', pendingAction: null });
     }
   }, [dispatch, runTick, startTickInterval, startAutoTpCheck]);
 
@@ -264,6 +270,8 @@ export function useSessionActions() {
     if (state.status !== 'running') {
       return;
     }
+    
+    dispatch({ type: 'SET_PENDING_ACTION', pendingAction: 'hold' });
     
     try {
       const { data: { user } } = await supabase.auth.getUser();
@@ -292,6 +300,8 @@ export function useSessionActions() {
     } catch (error) {
       console.error('Hold error:', error);
       toast({ title: 'Error', description: 'Failed to hold session', variant: 'destructive' });
+    } finally {
+      dispatch({ type: 'SET_PENDING_ACTION', pendingAction: null });
     }
   }, [dispatch, clearAutoTpCheck]);
 
@@ -303,9 +313,9 @@ export function useSessionActions() {
       return;
     }
     
+    dispatch({ type: 'SET_PENDING_ACTION', pendingAction: 'takeProfit' });
+    
     try {
-      dispatch({ type: 'SET_TICK_IN_FLIGHT', tickInFlight: true });
-      
       // Close all positions
       await runTick({ globalClose: true });
       
@@ -334,7 +344,7 @@ export function useSessionActions() {
       console.error('Take profit error:', error);
       toast({ title: 'Error', description: 'Failed to take profit', variant: 'destructive' });
     } finally {
-      dispatch({ type: 'SET_TICK_IN_FLIGHT', tickInFlight: false });
+      dispatch({ type: 'SET_PENDING_ACTION', pendingAction: null });
     }
   }, [dispatch, runTick, clearAutoTpCheck, queryClient]);
 
@@ -344,9 +354,9 @@ export function useSessionActions() {
     clearTickInterval();
     clearAutoTpCheck();
     
+    dispatch({ type: 'SET_PENDING_ACTION', pendingAction: 'closeAll' });
+    
     try {
-      dispatch({ type: 'SET_TICK_IN_FLIGHT', tickInFlight: true });
-      
       const state = useSessionStore.getState();
       
       // Close all positions if any
@@ -376,7 +386,7 @@ export function useSessionActions() {
       console.error('Close all error:', error);
       toast({ title: 'Error', description: 'Failed to close positions', variant: 'destructive' });
     } finally {
-      dispatch({ type: 'SET_TICK_IN_FLIGHT', tickInFlight: false });
+      dispatch({ type: 'SET_PENDING_ACTION', pendingAction: null });
     }
   }, [dispatch, runTick, clearTickInterval, clearAutoTpCheck, queryClient]);
 
