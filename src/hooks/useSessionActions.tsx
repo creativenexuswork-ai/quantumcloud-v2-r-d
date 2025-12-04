@@ -305,7 +305,7 @@ export function useSessionActions() {
     }
   }, [dispatch, clearAutoTpCheck]);
 
-  // TAKE PROFIT - Close all positions, go to holding
+  // TAKE PROFIT - Close all positions, then auto-resume same mode
   const takeProfit = useCallback(async () => {
     const state = useSessionStore.getState();
     
@@ -316,70 +316,91 @@ export function useSessionActions() {
     dispatch({ type: 'SET_PENDING_ACTION', pendingAction: 'takeProfit' });
     
     try {
-      // Close all positions
+      const currentMode = state.mode; // Save current mode for resume
+      
+      // Close all positions immediately
       await runTick({ globalClose: true });
       
       const { data: { user } } = await supabase.auth.getUser();
       if (user) {
-        // Go to holding state (not idle)
-        await supabase.from('paper_config').update({
-          session_status: 'holding',
-        } as any).eq('user_id', user.id);
-        
+        // Log the take profit
         await supabase.from('system_logs').insert({
           user_id: user.id,
           level: 'info',
           source: 'execution',
-          message: 'SESSION: Take Profit - all positions closed. Engine on hold.',
+          message: `SESSION: Take Profit - positions closed, resuming ${currentMode.toUpperCase()} mode`,
         });
+        
+        // Keep session running with same mode
+        await supabase.from('paper_config').update({
+          is_running: true,
+          session_status: 'running',
+        } as any).eq('user_id', user.id);
       }
       
-      // Transition to holding (positions closed but session still "alive")
-      dispatch({ type: 'TAKE_PROFIT' });
-      clearAutoTpCheck();
-      
+      // Force refresh stats
       queryClient.invalidateQueries({ queryKey: ['paper-stats'] });
-      toast({ title: 'Profit Taken', description: 'All positions closed. Click ACTIVATE to resume trading.' });
+      
+      // Update local state - keep running, just reset positions
+      dispatch({ 
+        type: 'SYNC_POSITIONS', 
+        hasPositions: false,
+        openCount: 0
+      });
+      
+      // Ensure we stay in running state (not holding)
+      dispatch({ type: 'SYNC_STATUS', status: 'running' });
+      
+      // Start a new tick cycle immediately
+      await runTick();
+      
+      toast({ title: 'Profit Taken', description: `Positions closed. ${currentMode.toUpperCase()} mode continues.` });
     } catch (error) {
       console.error('Take profit error:', error);
       toast({ title: 'Error', description: 'Failed to take profit', variant: 'destructive' });
     } finally {
       dispatch({ type: 'SET_PENDING_ACTION', pendingAction: null });
     }
-  }, [dispatch, runTick, clearAutoTpCheck, queryClient]);
+  }, [dispatch, runTick, queryClient]);
 
   // CLOSE ALL - Emergency close and full stop
   const closeAll = useCallback(async () => {
-    // Stop intervals first
+    // Stop intervals FIRST to prevent any new ticks
     clearTickInterval();
     clearAutoTpCheck();
     
     dispatch({ type: 'SET_PENDING_ACTION', pendingAction: 'closeAll' });
     
     try {
-      const state = useSessionStore.getState();
-      
-      // Close all positions if any
-      if (state.hasPositions || state.openCount > 0) {
-        await runTick({ globalClose: true });
-      }
+      // Close all positions immediately (don't check if positions exist, just close)
+      await runTick({ globalClose: true });
       
       const { data: { user } } = await supabase.auth.getUser();
       if (user) {
-        await supabase.from('paper_config').update({
+        // Update backend to idle - run in parallel for speed
+        const updatePromise = supabase.from('paper_config').update({
           is_running: false,
           session_status: 'idle',
         } as any).eq('user_id', user.id);
         
-        await supabase.from('system_logs').insert({
+        const logPromise = supabase.from('system_logs').insert({
           user_id: user.id,
           level: 'warn',
           source: 'execution',
           message: 'SESSION: CLOSE ALL - session stopped completely',
         });
+        
+        await Promise.all([updatePromise, logPromise]);
       }
       
+      // Update local state immediately
       dispatch({ type: 'CLOSE_ALL' });
+      dispatch({ 
+        type: 'SYNC_POSITIONS', 
+        hasPositions: false,
+        openCount: 0
+      });
+      
       queryClient.invalidateQueries({ queryKey: ['paper-stats'] });
       toast({ title: 'Session Stopped', description: 'All positions closed. Engine idle.' });
     } catch (error) {
