@@ -358,7 +358,7 @@ serve(async (req) => {
 
     const userId = user.id;
     const body = await req.json().catch(() => ({}));
-    const { burstRequested, globalClose, takeBurstProfit } = body;
+    const { burstRequested, globalClose, takeBurstProfit, takeProfit } = body;
 
     // Fetch latest prices
     const priceResponse = await fetch(`${supabaseUrl}/functions/v1/price-feed`, {
@@ -471,7 +471,56 @@ serve(async (req) => {
       }).eq('user_id', userId);
     }
 
-    // Handle global close - close all positions and stop session (BATCHED for speed)
+    // Handle TAKE PROFIT - close all positions FAST but keep session running
+    if (takeProfit) {
+      const { data: allPositions } = await supabase.from('paper_positions').select('*').eq('user_id', userId).eq('closed', false);
+      const closedCount = (allPositions || []).length;
+      
+      if (closedCount > 0) {
+        const tradeRecords = (allPositions || []).map(pos => {
+          const tick = ticks[pos.symbol];
+          const exitPrice = tick ? (pos.side === 'long' ? tick.bid : tick.ask) : Number(pos.entry_price);
+          const priceDiff = pos.side === 'long' ? exitPrice - Number(pos.entry_price) : Number(pos.entry_price) - exitPrice;
+          const pnl = priceDiff * Number(pos.size);
+          
+          return {
+            user_id: userId, symbol: pos.symbol, mode: pos.mode, side: pos.side,
+            size: pos.size, entry_price: pos.entry_price, exit_price: exitPrice,
+            sl: pos.sl, tp: pos.tp, opened_at: pos.opened_at,
+            realized_pnl: pnl, reason: 'take_profit', session_date: today, batch_id: pos.batch_id,
+          };
+        });
+        
+        // Batch close - but DO NOT change session status or is_running
+        await Promise.all([
+          supabase.from('paper_trades').insert(tradeRecords),
+          supabase.from('paper_positions').delete().eq('user_id', userId),
+          supabase.from('system_logs').insert({
+            user_id: userId, level: 'info', source: 'execution',
+            message: `TAKE PROFIT: ${closedCount} positions closed. Session continues.`,
+          }),
+        ]);
+      }
+      
+      // Return early - don't run modes on same tick as TP
+      const { data: stats } = await supabase.from('paper_stats_daily').select('*').eq('user_id', userId).eq('trade_date', today).maybeSingle();
+      return new Response(JSON.stringify({ 
+        success: true, 
+        action: 'takeProfit',
+        closedCount,
+        sessionStatus: sessionStatus,
+        stats: {
+          todayPnl: realizedPnl,
+          tradesToday: closedCount + (todayTrades?.length || 0),
+          openPositionsCount: 0,
+          equity: startingEquity + realizedPnl,
+        }
+      }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Handle global close - close all positions and STOP session (BATCHED for speed)
     if (globalClose) {
       const { data: allPositions } = await supabase.from('paper_positions').select('*').eq('user_id', userId).eq('closed', false);
       const closedCount = (allPositions || []).length;
