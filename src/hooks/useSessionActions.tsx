@@ -7,8 +7,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useTradingState } from './useSessionState';
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
-const TICK_INTERVAL_MS = 3000; // Trading tick interval (mode logic)
-const FAST_REFRESH_MS = 500; // Fast refresh after close operations
+const TICK_INTERVAL_MS = 2000; // Trading tick interval (faster for responsive P&L)
 
 // Map UI mode to backend mode
 const MODE_TO_BACKEND: Record<TradingMode, string> = {
@@ -356,7 +355,18 @@ export function useSessionActions() {
       const { data: { user } } = await supabase.auth.getUser();
       
       // Close all positions via backend using takeProfit option (does NOT change session state)
-      await runTick({ takeProfit: true });
+      const result = await runTick({ takeProfit: true });
+      
+      // Sync stats from result immediately
+      if (result?.stats) {
+        dispatch({
+          type: 'SYNC_PNL',
+          pnlToday: result.stats.todayPnl || 0,
+          tradesToday: result.stats.tradesToday || 0,
+          winRate: result.stats.winRate || 0,
+          equity: result.stats.equity || 10000,
+        });
+      }
       
       // Log the event
       if (user) {
@@ -369,7 +379,7 @@ export function useSessionActions() {
       }
       
       // Force immediate refresh of stats
-      await refreshStats();
+      await queryClient.invalidateQueries({ queryKey: ['paper-stats'] });
       
       toast({ 
         title: 'Profit Taken', 
@@ -381,7 +391,7 @@ export function useSessionActions() {
     } finally {
       dispatch({ type: 'SET_PENDING_ACTION', pendingAction: null });
     }
-  }, [dispatch, runTick, refreshStats]);
+  }, [dispatch, runTick, queryClient]);
 
   // CLOSE ALL - Emergency close and full stop (FAST, NO NEW TRADES EVER)
   const closeAll = useCallback(async () => {
@@ -405,16 +415,27 @@ export function useSessionActions() {
         await supabase.from('paper_config').update({
           is_running: false,
           session_status: 'idle',
-          burst_requested: false, // Clear any pending burst request
+          burst_requested: false,
         } as any).eq('user_id', user.id);
       }
       
       // Now call backend global close to actually close positions
-      // The backend will also set status to idle, but we've already done it above
-      await runTick({ globalClose: true });
+      // The backend will return early after closing - no mode execution
+      const result = await runTick({ globalClose: true });
+      
+      // Sync stats from result immediately
+      if (result?.stats) {
+        dispatch({
+          type: 'SYNC_PNL',
+          pnlToday: result.stats.todayPnl || 0,
+          tradesToday: result.stats.tradesToday || 0,
+          winRate: result.stats.winRate || 0,
+          equity: result.stats.equity || 10000,
+        });
+      }
       
       // Force immediate refresh of stats
-      await refreshStats();
+      await queryClient.invalidateQueries({ queryKey: ['paper-stats'] });
       
       toast({ title: 'Session Stopped', description: 'All positions closed. Engine idle.' });
     } catch (error) {
@@ -423,7 +444,7 @@ export function useSessionActions() {
     } finally {
       dispatch({ type: 'SET_PENDING_ACTION', pendingAction: null });
     }
-  }, [dispatch, runTick, clearTickInterval, clearAutoTpCheck, refreshStats]);
+  }, [dispatch, runTick, clearTickInterval, clearAutoTpCheck, queryClient]);
 
   // Reset session
   const resetSession = useCallback(() => {
