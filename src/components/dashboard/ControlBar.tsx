@@ -6,7 +6,6 @@ import { toast } from '@/hooks/use-toast';
 interface ControlBarProps {
   status: SessionStatus;
   openPositionsCount: number;
-  showSpinner: boolean;
   pendingAction: PendingAction;
   onActivate: () => void;
   onTakeProfit: () => void;
@@ -17,7 +16,6 @@ interface ControlBarProps {
 export function ControlBar({
   status,
   openPositionsCount,
-  showSpinner,
   pendingAction,
   onActivate,
   onTakeProfit,
@@ -29,11 +27,11 @@ export function ControlBar({
   const isIdle = status === 'idle' || status === 'stopped';
   const isActive = isRunning || isHolding;
 
-  // Button enabled states - computed from status, NOT from polling
-  const canActivate = (isIdle || isHolding) && !showSpinner;
-  const canHold = isRunning && !showSpinner;
-  const canTakeProfit = isActive && openPositionsCount > 0 && !showSpinner;
-  const canCloseAll = isActive && !showSpinner;
+  // Button enabled states - each button disabled only when ITS action is pending
+  const canActivate = (isIdle || isHolding) && pendingAction !== 'activate';
+  const canHold = isRunning && pendingAction !== 'hold';
+  const canTakeProfit = isActive && openPositionsCount > 0 && pendingAction !== 'takeProfit';
+  const canCloseAll = isActive && pendingAction !== 'closeAll';
 
   const handleTakeProfit = () => {
     if (isIdle) {
