@@ -55,35 +55,31 @@ export function getInitialSessionState(): SessionState {
 export function getButtonStates(session: SessionState): ButtonStates {
   const { status, hasPositions, pendingAction, halted, openCount } = session;
   
-  // Spinner shows ONLY during the specific pending action (not blocking everything)
-  const showSpinner = pendingAction !== null;
-  
-  // Buttons are individually disabled based on state + whether THEY are pending
-  const isActivatePending = pendingAction === 'activate';
-  const isHoldPending = pendingAction === 'hold';
-  const isTakeProfitPending = pendingAction === 'takeProfit';
-  const isCloseAllPending = pendingAction === 'closeAll';
+  // CRITICAL: When ANY action is in progress, ALL control buttons are disabled
+  // This prevents flashing/re-triggering during TP or CloseAll operations
+  const isActionInProgress = pendingAction !== null;
+  const showSpinner = isActionInProgress;
   
   return {
     // ACTIVATE: when idle, stopped, OR holding (acts as Resume from holding)
-    // Only disabled if THIS action is pending, or halted
-    canActivate: (status === 'idle' || status === 'stopped' || status === 'holding') && !isActivatePending && !halted,
+    // Disabled if ANY action is pending, or halted
+    canActivate: (status === 'idle' || status === 'stopped' || status === 'holding') && !isActionInProgress && !halted,
     
-    // HOLD: only when running, only disabled if THIS action is pending
-    canHold: status === 'running' && !isHoldPending,
+    // HOLD: only when running, disabled if ANY action is pending
+    canHold: status === 'running' && !isActionInProgress,
     
     // TAKE PROFIT: when running or holding AND has positions
-    // Only disabled if THIS action is pending
-    canTakeProfit: (status === 'running' || status === 'holding') && !isTakeProfitPending && (hasPositions || openCount > 0),
+    // Disabled if ANY action is pending
+    canTakeProfit: (status === 'running' || status === 'holding') && !isActionInProgress && (hasPositions || openCount > 0),
     
     // CLOSE ALL: any active state (closes all, goes to idle)
-    // Only disabled if THIS action is pending
-    canCloseAll: (status === 'running' || status === 'holding') && !isCloseAllPending,
+    // Disabled if ANY action is pending
+    canCloseAll: (status === 'running' || status === 'holding') && !isActionInProgress,
     
     // MODE CHANGE: only when idle or stopped
-    canChangeMode: status === 'idle' || status === 'stopped',
+    canChangeMode: (status === 'idle' || status === 'stopped') && !isActionInProgress,
     
-    // Spinner shows ONLY during user-initiated actions
+    // Spinner shows during any user-initiated action
     showSpinner,
   };
 }

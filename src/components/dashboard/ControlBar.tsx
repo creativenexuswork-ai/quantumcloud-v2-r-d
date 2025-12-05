@@ -27,11 +27,15 @@ export function ControlBar({
   const isIdle = status === 'idle' || status === 'stopped';
   const isActive = isRunning || isHolding;
 
-  // Button enabled states - each button disabled only when ITS action is pending
-  const canActivate = (isIdle || isHolding) && pendingAction !== 'activate';
-  const canHold = isRunning && pendingAction !== 'hold';
-  const canTakeProfit = isActive && openPositionsCount > 0 && pendingAction !== 'takeProfit';
-  const canCloseAll = isActive && pendingAction !== 'closeAll';
+  // CRITICAL: When ANY action is in progress, ALL buttons are disabled
+  // This prevents flashing/re-triggering during TP or CloseAll operations
+  const isActionInProgress = pendingAction !== null;
+  
+  // Button enabled states - ALL disabled when any action is pending
+  const canActivate = (isIdle || isHolding) && !isActionInProgress;
+  const canHold = isRunning && !isActionInProgress;
+  const canTakeProfit = isActive && openPositionsCount > 0 && !isActionInProgress;
+  const canCloseAll = isActive && !isActionInProgress;
 
   const handleTakeProfit = () => {
     if (isIdle) {
