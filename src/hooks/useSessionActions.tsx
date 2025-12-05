@@ -398,8 +398,8 @@ export function useSessionActions() {
   }, [dispatch, clearAutoTpCheck]);
 
   // ================================================================
-  // TAKE PROFIT - INSTANT atomic close, session continues unchanged
-  // NO auto-resume batch opening - positions naturally open on next tick
+  // TAKE PROFIT - INSTANT optimistic close, session continues unchanged
+  // Buttons re-enable immediately, backend work happens in background
   // ================================================================
   const takeProfit = useCallback(async () => {
     const state = useSessionStore.getState();
@@ -408,136 +408,128 @@ export function useSessionActions() {
       return;
     }
     
-    // CRITICAL: Stop ALL intervals FIRST to prevent any race conditions
+    // CRITICAL: Stop tick interval to prevent race conditions
     clearTickInterval();
-    clearPnlRefresh();
     clearAutoTpCheck();
+    // Keep P&L refresh running for visual feedback
     
-    // CRITICAL: Reset tickInFlight so manual action can execute
+    // Reset tickInFlight so manual action can execute
     tickInFlightRef.current = false;
     
-    // Set pending action - spinner shows
-    dispatch({ type: 'SET_PENDING_ACTION', pendingAction: 'takeProfit' });
-    
-    // Optimistic update - positions cleared immediately (status unchanged)
+    // INSTANT optimistic update - positions cleared immediately (status unchanged)
     dispatch({ type: 'TAKE_PROFIT' });
     dispatch({ type: 'SYNC_POSITIONS', hasPositions: false, openCount: 0 });
     
-    try {
-      // Send takeProfit flag - backend closes all and returns immediately
-      // NO mode execution happens on this tick
-      const result = await runTick({ takeProfit: true });
-      
-      // Sync stats from response - this is authoritative
-      if (result?.stats) {
-        dispatch({
-          type: 'SYNC_PNL',
-          pnlToday: result.stats.todayPnl || 0,
-          tradesToday: result.stats.tradesToday || 0,
-          winRate: result.stats.winRate || 0,
-          equity: result.stats.equity || 10000,
+    // Brief pending state just while firing request
+    dispatch({ type: 'SET_PENDING_ACTION', pendingAction: 'takeProfit' });
+    
+    // Fire request and IMMEDIATELY clear pending action for instant feel
+    runTick({ takeProfit: true })
+      .then((result) => {
+        // Sync stats from response in background
+        if (result?.stats) {
+          dispatch({
+            type: 'SYNC_PNL',
+            pnlToday: result.stats.todayPnl || 0,
+            tradesToday: result.stats.tradesToday || 0,
+            winRate: result.stats.winRate || 0,
+            equity: result.stats.equity || 10000,
+          });
+        }
+        
+        // Background query refresh - 300ms P&L will also catch this
+        queryClient.invalidateQueries({ queryKey: ['paper-stats'] });
+        
+        toast({ 
+          title: 'Profit Taken', 
+          description: `${result?.closedCount || 0} positions closed. Trading continues.` 
         });
-        dispatch({
-          type: 'SYNC_POSITIONS',
-          hasPositions: (result.stats.openPositionsCount || 0) > 0,
-          openCount: result.stats.openPositionsCount || 0,
-        });
-      }
-      
-      // Force immediate query refresh
-      await queryClient.invalidateQueries({ queryKey: ['paper-stats'] });
-      
-      toast({ 
-        title: 'Profit Taken', 
-        description: `${result?.closedCount || 0} positions closed. Trading continues.` 
+        
+        // Resume tick interval since session continues
+        const currentStatus = useSessionStore.getState().status;
+        if (currentStatus === 'running') {
+          startTickInterval();
+          startAutoTpCheck();
+        }
+      })
+      .catch((error) => {
+        console.error('Take profit error:', error);
+        toast({ title: 'Error', description: 'Failed to take profit', variant: 'destructive' });
       });
-      
-      // Resume intervals since session continues (only if still running)
-      const currentStatus = useSessionStore.getState().status;
-      if (currentStatus === 'running') {
-        startTickInterval();
-        startPnlRefresh();
-        startAutoTpCheck();
-      }
-      
-    } catch (error) {
-      console.error('Take profit error:', error);
-      toast({ title: 'Error', description: 'Failed to take profit', variant: 'destructive' });
-    } finally {
-      // Clear pending action immediately after response
-      dispatch({ type: 'SET_PENDING_ACTION', pendingAction: null });
-    }
-  }, [dispatch, runTick, queryClient, clearTickInterval, clearPnlRefresh, clearAutoTpCheck, startTickInterval, startPnlRefresh, startAutoTpCheck]);
+    
+    // INSTANT: Clear pending action immediately after firing request
+    // Don't wait for backend - buttons re-enable now
+    dispatch({ type: 'SET_PENDING_ACTION', pendingAction: null });
+    
+  }, [dispatch, runTick, queryClient, clearTickInterval, clearAutoTpCheck, startTickInterval, startAutoTpCheck]);
 
   // ================================================================
-  // CLOSE ALL - INSTANT atomic close + full stop to idle
-  // NO auto-resume - session goes idle
+  // CLOSE ALL - INSTANT optimistic close + full stop to idle
+  // Buttons re-enable immediately, backend work happens in background
   // ================================================================
   const closeAll = useCallback(async () => {
-    // CRITICAL: Stop ALL intervals FIRST to prevent any race conditions
+    // CRITICAL: Stop ALL intervals to prevent any race conditions
     clearTickInterval();
     clearPnlRefresh();
     clearAutoTpCheck();
     
-    // CRITICAL: Reset tickInFlight so manual action can execute
+    // Reset tickInFlight so manual action can execute
     tickInFlightRef.current = false;
     
-    // Set pending action - spinner shows
-    dispatch({ type: 'SET_PENDING_ACTION', pendingAction: 'closeAll' });
-    
-    // Optimistic update - positions cleared, status idle
+    // INSTANT optimistic update - positions cleared, status idle
     dispatch({ type: 'CLOSE_ALL' });
     dispatch({ type: 'SYNC_POSITIONS', hasPositions: false, openCount: 0 });
     dispatch({ type: 'SYNC_STATUS', status: 'idle' });
     
-    try {
-      const { data: { user } } = await supabase.auth.getUser();
-      
-      // CRITICAL: Update database to idle FIRST to prevent any race condition
-      if (user) {
-        await supabase.from('paper_config').update({
-          is_running: false,
-          session_status: 'idle',
-          burst_requested: false,
-        } as any).eq('user_id', user.id);
-      }
-      
-      // Now call backend to close positions (backend also sets idle but we did it first)
-      const result = await runTick({ globalClose: true });
-      
-      // Sync final stats from response
-      if (result?.stats) {
-        dispatch({
-          type: 'SYNC_PNL',
-          pnlToday: result.stats.todayPnl || 0,
-          tradesToday: result.stats.tradesToday || 0,
-          winRate: result.stats.winRate || 0,
-          equity: result.stats.equity || 10000,
+    // Brief pending state just while firing request
+    dispatch({ type: 'SET_PENDING_ACTION', pendingAction: 'closeAll' });
+    
+    // Fire database update and backend request in background
+    (async () => {
+      try {
+        const { data: { user } } = await supabase.auth.getUser();
+        
+        // Update database to idle (fire and forget style but awaited for safety)
+        if (user) {
+          supabase.from('paper_config').update({
+            is_running: false,
+            session_status: 'idle',
+            burst_requested: false,
+          } as any).eq('user_id', user.id);
+        }
+        
+        // Backend closes positions
+        const result = await runTick({ globalClose: true });
+        
+        // Sync final stats from response
+        if (result?.stats) {
+          dispatch({
+            type: 'SYNC_PNL',
+            pnlToday: result.stats.todayPnl || 0,
+            tradesToday: result.stats.tradesToday || 0,
+            winRate: result.stats.winRate || 0,
+            equity: result.stats.equity || 10000,
+          });
+        }
+        
+        // Background query refresh
+        queryClient.invalidateQueries({ queryKey: ['paper-stats'] });
+        
+        toast({ 
+          title: 'Session Closed', 
+          description: `${result?.closedCount || 0} positions closed. Trading stopped.` 
         });
-        dispatch({
-          type: 'SYNC_POSITIONS',
-          hasPositions: (result.stats.openPositionsCount || 0) > 0,
-          openCount: result.stats.openPositionsCount || 0,
-        });
+        
+      } catch (error) {
+        console.error('Close all error:', error);
+        toast({ title: 'Error', description: 'Failed to close positions', variant: 'destructive' });
       }
-      
-      // Force query refresh
-      await queryClient.invalidateQueries({ queryKey: ['paper-stats'] });
-      
-      toast({ 
-        title: 'Session Closed', 
-        description: `${result?.closedCount || 0} positions closed. Trading stopped.` 
-      });
-      
-      // DO NOT restart any intervals - session is idle
-      
-    } catch (error) {
-      console.error('Close all error:', error);
-      toast({ title: 'Error', description: 'Failed to close positions', variant: 'destructive' });
-    } finally {
-      // Clear pending action immediately
-      dispatch({ type: 'SET_PENDING_ACTION', pendingAction: null });
-    }
+    })();
+    
+    // INSTANT: Clear pending action immediately after firing request
+    // Don't wait for backend - buttons re-enable now
+    dispatch({ type: 'SET_PENDING_ACTION', pendingAction: null });
+    
   }, [dispatch, runTick, queryClient, clearTickInterval, clearPnlRefresh, clearAutoTpCheck]);
 
   // Change mode (only when idle or stopped)
