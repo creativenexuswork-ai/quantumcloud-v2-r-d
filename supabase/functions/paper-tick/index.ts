@@ -383,17 +383,17 @@ serve(async (req) => {
     const today = new Date().toISOString().split('T')[0];
 
     // ================================================================
-    // TAKE PROFIT HANDLER - Atomic, returns immediately
+    // TAKE PROFIT HANDLER - Atomic close, returns IMMEDIATELY
+    // HARD DELETE all positions - no leftovers
     // ================================================================
     if (takeProfit === true) {
-      console.log(`[TAKE_PROFIT] Starting atomic close for user ${userId}`);
+      console.log(`[TAKE_PROFIT] ATOMIC CLOSE starting for user ${userId}`);
       
-      // Fetch all open positions
+      // HARD FETCH all positions for this user (no closed filter - get everything)
       const { data: allPositions } = await supabase
         .from('paper_positions')
         .select('*')
-        .eq('user_id', userId)
-        .eq('closed', false);
+        .eq('user_id', userId);
       
       const closedCount = (allPositions || []).length;
       let closePnl = 0;
@@ -434,7 +434,7 @@ serve(async (req) => {
       const currentSessionStatus = config?.session_status || 'running';
       
       if (closedCount > 0) {
-        // Build trade records
+        // Build trade records for each position
         const tradeRecords = (allPositions || []).map(pos => {
           const tick = ticks[pos.symbol];
           const exitPrice = tick ? (pos.side === 'long' ? tick.bid : tick.ask) : Number(pos.entry_price);
@@ -450,19 +450,19 @@ serve(async (req) => {
           };
         });
         
-        // Batch operations - DO NOT change session status
+        // CRITICAL: HARD DELETE all positions for user - no filter by closed
         await Promise.all([
           supabase.from('paper_trades').insert(tradeRecords),
-          supabase.from('paper_positions').delete().eq('user_id', userId).eq('closed', false),
+          supabase.from('paper_positions').delete().eq('user_id', userId),
           supabase.from('system_logs').insert({
             user_id: userId, level: 'info', source: 'execution',
-            message: `TAKE PROFIT: ${closedCount} positions closed. Session continues (${currentSessionStatus}).`,
+            message: `TAKE PROFIT: ${closedCount} positions closed (hard delete). Session continues (${currentSessionStatus}).`,
           }),
         ]);
       } else {
         await supabase.from('system_logs').insert({
           user_id: userId, level: 'info', source: 'execution',
-          message: `TAKE PROFIT: No open positions to close.`,
+          message: `TAKE PROFIT: No positions found.`,
         });
       }
       
@@ -471,14 +471,14 @@ serve(async (req) => {
       const finalTradesToday = (existingTrades?.length || 0) + closedCount;
       const wins = (existingTrades || []).filter((t: any) => Number(t.realized_pnl) > 0).length + (closePnl > 0 ? 1 : 0);
       
-      console.log(`[TAKE_PROFIT] Complete: closed=${closedCount}, pnl=${closePnl.toFixed(2)}, status unchanged=${currentSessionStatus}`);
+      console.log(`[TAKE_PROFIT] COMPLETE: closed=${closedCount}, pnl=${closePnl.toFixed(2)}, status=${currentSessionStatus}`);
       
-      // CRITICAL: Return immediately - NO mode execution
+      // CRITICAL: Return IMMEDIATELY - absolutely NO mode execution after this
       return new Response(JSON.stringify({ 
         success: true, 
         action: 'takeProfit',
         closedCount,
-        sessionStatus: currentSessionStatus, // Status unchanged
+        sessionStatus: currentSessionStatus,
         stats: {
           todayPnl: totalRealizedPnl,
           tradesToday: finalTradesToday,
@@ -492,17 +492,17 @@ serve(async (req) => {
     }
 
     // ================================================================
-    // GLOBAL CLOSE HANDLER - Atomic, returns immediately, sets status to idle
+    // GLOBAL CLOSE HANDLER - Atomic close + STOP, returns IMMEDIATELY
+    // HARD DELETE all positions - no leftovers
     // ================================================================
     if (globalClose === true) {
-      console.log(`[GLOBAL_CLOSE] Starting atomic close and stop for user ${userId}`);
+      console.log(`[GLOBAL_CLOSE] ATOMIC CLOSE + STOP starting for user ${userId}`);
       
-      // Fetch all open positions
+      // HARD FETCH all positions for this user (no closed filter - get everything)
       const { data: allPositions } = await supabase
         .from('paper_positions')
         .select('*')
-        .eq('user_id', userId)
-        .eq('closed', false);
+        .eq('user_id', userId);
       
       const closedCount = (allPositions || []).length;
       let closePnl = 0;
@@ -534,7 +534,7 @@ serve(async (req) => {
       const startingEquity = dailyStats?.equity_start ?? account?.equity ?? 10000;
       
       if (closedCount > 0) {
-        // Build trade records
+        // Build trade records for each position
         const tradeRecords = (allPositions || []).map(pos => {
           const tick = ticks[pos.symbol];
           const exitPrice = tick ? (pos.side === 'long' ? tick.bid : tick.ask) : Number(pos.entry_price);
@@ -550,10 +550,10 @@ serve(async (req) => {
           };
         });
         
-        // Batch operations - Close all, set session to idle
+        // CRITICAL: HARD DELETE all positions + set session idle
         await Promise.all([
           supabase.from('paper_trades').insert(tradeRecords),
-          supabase.from('paper_positions').delete().eq('user_id', userId).eq('closed', false),
+          supabase.from('paper_positions').delete().eq('user_id', userId),
           supabase.from('paper_config').update({ 
             session_status: 'idle',
             is_running: false,
@@ -561,11 +561,11 @@ serve(async (req) => {
           }).eq('user_id', userId),
           supabase.from('system_logs').insert({
             user_id: userId, level: 'info', source: 'execution',
-            message: `CLOSE ALL: ${closedCount} positions closed. Session stopped.`,
+            message: `CLOSE ALL: ${closedCount} positions closed (hard delete). Session stopped.`,
           }),
         ]);
       } else {
-        // No positions, just update config
+        // No positions found, just update config to idle
         await Promise.all([
           supabase.from('paper_config').update({ 
             session_status: 'idle',
@@ -574,7 +574,7 @@ serve(async (req) => {
           }).eq('user_id', userId),
           supabase.from('system_logs').insert({
             user_id: userId, level: 'info', source: 'execution',
-            message: `CLOSE ALL: No open positions. Session stopped.`,
+            message: `CLOSE ALL: No positions found. Session stopped.`,
           }),
         ]);
       }
@@ -583,14 +583,14 @@ serve(async (req) => {
       const totalRealizedPnl = existingRealizedPnl + closePnl;
       const finalTradesToday = (existingTrades?.length || 0) + closedCount;
       
-      console.log(`[GLOBAL_CLOSE] Complete: closed=${closedCount}, pnl=${closePnl.toFixed(2)}, status=idle`);
+      console.log(`[GLOBAL_CLOSE] COMPLETE: closed=${closedCount}, pnl=${closePnl.toFixed(2)}, status=idle`);
       
-      // CRITICAL: Return immediately - NO mode execution
+      // CRITICAL: Return IMMEDIATELY - absolutely NO mode execution after this
       return new Response(JSON.stringify({ 
         success: true, 
         action: 'globalClose',
         closedCount,
-        sessionStatus: 'idle', // Always idle after close all
+        sessionStatus: 'idle',
         stats: {
           todayPnl: totalRealizedPnl,
           tradesToday: finalTradesToday,

@@ -88,10 +88,15 @@ export function useSessionActions() {
 
   // Run a single tick - strategy execution only
   const runTick = useCallback(async (options?: { globalClose?: boolean; takeBurstProfit?: boolean; takeProfit?: boolean }) => {
-    if (tickInFlightRef.current) return null;
+    const isCloseAction = options?.globalClose || options?.takeProfit;
+    
+    // CRITICAL: Manual close actions (TP/CloseAll) ALWAYS execute - never block them
+    // Regular ticks are blocked if another tick is in-flight
+    if (!isCloseAction && tickInFlightRef.current) {
+      return null;
+    }
     
     const currentStatus = useSessionStore.getState().status;
-    const isCloseAction = options?.globalClose || options?.takeProfit;
     
     // Regular ticks only run when session is 'running'
     if (!isCloseAction && !options?.takeBurstProfit) {
@@ -100,7 +105,10 @@ export function useSessionActions() {
       }
     }
     
-    tickInFlightRef.current = true;
+    // Only set in-flight for regular ticks (manual actions run regardless)
+    if (!isCloseAction) {
+      tickInFlightRef.current = true;
+    }
     
     try {
       const { data: { session: currentSession } } = await supabase.auth.getSession();
@@ -156,7 +164,10 @@ export function useSessionActions() {
       console.error('Tick error:', error);
       return null;
     } finally {
-      tickInFlightRef.current = false;
+      // Only reset in-flight flag for regular ticks (manual actions didn't set it)
+      if (!options?.globalClose && !options?.takeProfit) {
+        tickInFlightRef.current = false;
+      }
     }
   }, [queryClient, dispatch]);
 
@@ -397,6 +408,11 @@ export function useSessionActions() {
       return;
     }
     
+    // CRITICAL: Stop all intervals FIRST to prevent any race conditions
+    clearTickInterval();
+    clearAutoTpCheck();
+    // Keep P&L refresh running for visual feedback
+    
     // Set pending action - spinner shows
     dispatch({ type: 'SET_PENDING_ACTION', pendingAction: 'takeProfit' });
     
@@ -430,11 +446,15 @@ export function useSessionActions() {
       
       toast({ 
         title: 'Profit Taken', 
-        description: `Positions closed. Trading continues.` 
+        description: `${result?.closedCount || 0} positions closed. Trading continues.` 
       });
       
-      // DO NOT call runTick() again here - no auto-resume batch
-      // The regular tick interval will open new positions naturally
+      // Resume tick interval since session continues
+      const currentStatus = useSessionStore.getState().status;
+      if (currentStatus === 'running') {
+        startTickInterval();
+        startAutoTpCheck();
+      }
       
     } catch (error) {
       console.error('Take profit error:', error);
@@ -443,14 +463,14 @@ export function useSessionActions() {
       // Clear pending action immediately after response
       dispatch({ type: 'SET_PENDING_ACTION', pendingAction: null });
     }
-  }, [dispatch, runTick, queryClient]);
+  }, [dispatch, runTick, queryClient, clearTickInterval, clearAutoTpCheck, startTickInterval, startAutoTpCheck]);
 
   // ================================================================
   // CLOSE ALL - INSTANT atomic close + full stop to idle
   // NO auto-resume - session goes idle
   // ================================================================
   const closeAll = useCallback(async () => {
-    // Stop all intervals FIRST
+    // CRITICAL: Stop ALL intervals FIRST to prevent any race conditions
     clearTickInterval();
     clearPnlRefresh();
     clearAutoTpCheck();
@@ -499,7 +519,7 @@ export function useSessionActions() {
       
       toast({ 
         title: 'Session Closed', 
-        description: 'All positions closed. Trading stopped.' 
+        description: `${result?.closedCount || 0} positions closed. Trading stopped.` 
       });
       
     } catch (error) {
