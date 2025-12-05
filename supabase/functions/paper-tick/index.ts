@@ -15,7 +15,7 @@ const DEFAULT_RISK_CONFIG = {
 };
 
 const DEFAULT_BURST_CONFIG = {
-  size: 20,
+  size: 5, // Reduced from 20 to 5 for controlled burst execution
   dailyProfitTargetPercent: 8,
   riskPerBurstPercent: 2,
 };
@@ -92,13 +92,20 @@ function runSniperMode(ctx: EngineContext): ProposedOrder[] {
   const orders: ProposedOrder[] = [];
   const riskPct = ctx.modeSettings?.sniper?.riskPerTrade ?? 0.5;
   
+  // Only trade on strong signals - check if we should trade this tick
+  const shouldTrade = Math.random() < 0.3; // 30% chance per tick
+  if (!shouldTrade) return [];
+  
   for (const symbol of ctx.selectedSymbols) {
     const tick = ctx.ticks[symbol];
     if (!tick) continue;
     if (tick.regime === 'low_vol') continue;
     
     const trend = detectTrend(tick);
-    const side: Side = trend !== 'neutral' ? (trend === 'up' ? 'long' : 'short') : (Math.random() > 0.5 ? 'long' : 'short');
+    // Sniper requires clear direction, skip neutral
+    if (trend === 'neutral') continue;
+    
+    const side: Side = trend === 'up' ? 'long' : 'short';
     const slDistance = tick.mid * 0.015;
     const tpDistance = tick.mid * 0.03;
     const size = calculateSize(ctx.equity, riskPct, tick.mid, slDistance);
@@ -114,14 +121,15 @@ function runSniperMode(ctx: EngineContext): ProposedOrder[] {
     });
   }
   
-  return orders.slice(0, 2);
+  return orders.slice(0, 1); // Max 1 sniper trade per tick
 }
 
 function runBurstMode(ctx: EngineContext): ProposedOrder[] {
   if (!ctx.burstRequested) return [];
   
   const orders: ProposedOrder[] = [];
-  const burstSize = ctx.burstConfig?.size ?? 20;
+  // Use configured burst size, capped at 5 for controlled execution
+  const burstSize = Math.min(ctx.burstConfig?.size ?? 5, 5);
   const totalRisk = ctx.burstConfig?.riskPerBurstPercent ?? 2;
   const riskPerTrade = totalRisk / burstSize;
   
@@ -173,13 +181,20 @@ function runTrendMode(ctx: EngineContext): ProposedOrder[] {
   const orders: ProposedOrder[] = [];
   const riskPct = ctx.modeSettings?.trend?.riskPerTrade ?? 1;
   
+  // Only trade on 40% of ticks - be selective
+  const shouldTrade = Math.random() < 0.4;
+  if (!shouldTrade) return [];
+  
   for (const symbol of ctx.selectedSymbols) {
     const tick = ctx.ticks[symbol];
     if (!tick) continue;
     if (tick.regime === 'low_vol') continue;
     
     const trend = detectTrend(tick);
-    const side: Side = trend !== 'neutral' ? (trend === 'up' ? 'long' : 'short') : (Math.random() > 0.5 ? 'long' : 'short');
+    // Trend mode requires clear direction
+    if (trend === 'neutral') continue;
+    
+    const side: Side = trend === 'up' ? 'long' : 'short';
     const slDistance = tick.mid * 0.01;
     const tpDistance = tick.mid * 0.02;
     const size = calculateSize(ctx.equity, riskPct, tick.mid, slDistance);
@@ -191,7 +206,7 @@ function runTrendMode(ctx: EngineContext): ProposedOrder[] {
       mode: 'trend', reason: `Trend entry on ${tick.regime}`, confidence: 0.7
     });
   }
-  return orders.slice(0, 3);
+  return orders.slice(0, 2); // Max 2 trend trades per tick
 }
 
 function runSwingMode(ctx: EngineContext): ProposedOrder[] {
@@ -899,7 +914,7 @@ serve(async (req) => {
         const riskBlockReasons: string[] = [];
         const dbErrors: string[] = [];
         
-        const maxTradesThisTick = Math.min(availableSlots, 25);
+        const maxTradesThisTick = Math.min(availableSlots, 5); // Reduced from 25 to 5 for controlled execution
 
         for (const order of allProposedOrders) {
           if (openedCount >= maxTradesThisTick) {
