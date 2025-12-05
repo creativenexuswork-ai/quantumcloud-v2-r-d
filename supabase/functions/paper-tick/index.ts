@@ -521,9 +521,15 @@ serve(async (req) => {
     }
 
     // Handle global close - close all positions and STOP session (BATCHED for speed)
+    // CRITICAL: Return early after global close to prevent any new trades from opening
     if (globalClose) {
       const { data: allPositions } = await supabase.from('paper_positions').select('*').eq('user_id', userId).eq('closed', false);
       const closedCount = (allPositions || []).length;
+      
+      // Calculate realized P&L for the response
+      const { data: todayTradesNow } = await supabase.from('paper_trades').select('*').eq('user_id', userId).eq('session_date', today);
+      const existingRealizedPnl = (todayTradesNow || []).reduce((sum: number, t: any) => sum + Number(t.realized_pnl), 0);
+      let closePnl = 0;
       
       if (closedCount > 0) {
         // Build all trade records in memory first (no await)
@@ -532,6 +538,7 @@ serve(async (req) => {
           const exitPrice = tick ? (pos.side === 'long' ? tick.bid : tick.ask) : Number(pos.entry_price);
           const priceDiff = pos.side === 'long' ? exitPrice - Number(pos.entry_price) : Number(pos.entry_price) - exitPrice;
           const pnl = priceDiff * Number(pos.size);
+          closePnl += pnl;
           
           return {
             user_id: userId, symbol: pos.symbol, mode: pos.mode, side: pos.side,
@@ -547,7 +554,8 @@ serve(async (req) => {
           supabase.from('paper_positions').delete().eq('user_id', userId),
           supabase.from('paper_config').update({ 
             session_status: 'idle',
-            is_running: false 
+            is_running: false,
+            burst_requested: false
           }).eq('user_id', userId),
           supabase.from('system_logs').insert({
             user_id: userId, level: 'info', source: 'execution',
@@ -559,7 +567,8 @@ serve(async (req) => {
         await Promise.all([
           supabase.from('paper_config').update({ 
             session_status: 'idle',
-            is_running: false 
+            is_running: false,
+            burst_requested: false
           }).eq('user_id', userId),
           supabase.from('system_logs').insert({
             user_id: userId, level: 'info', source: 'execution',
@@ -567,6 +576,25 @@ serve(async (req) => {
           }),
         ]);
       }
+      
+      // CRITICAL: Return early to prevent any further mode execution
+      const totalRealizedPnl = existingRealizedPnl + closePnl;
+      return new Response(JSON.stringify({ 
+        success: true, 
+        action: 'globalClose',
+        closedCount,
+        sessionStatus: 'idle',
+        halted: isHalted,
+        stats: {
+          todayPnl: totalRealizedPnl,
+          tradesToday: (todayTradesNow?.length || 0) + closedCount,
+          openPositionsCount: 0,
+          equity: startingEquity + totalRealizedPnl,
+          winRate: 50,
+        }
+      }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
     }
 
     // Handle take burst profit (BATCHED for speed)
