@@ -408,10 +408,13 @@ export function useSessionActions() {
       return;
     }
     
-    // CRITICAL: Stop all intervals FIRST to prevent any race conditions
+    // CRITICAL: Stop ALL intervals FIRST to prevent any race conditions
     clearTickInterval();
+    clearPnlRefresh();
     clearAutoTpCheck();
-    // Keep P&L refresh running for visual feedback
+    
+    // CRITICAL: Reset tickInFlight so manual action can execute
+    tickInFlightRef.current = false;
     
     // Set pending action - spinner shows
     dispatch({ type: 'SET_PENDING_ACTION', pendingAction: 'takeProfit' });
@@ -449,10 +452,11 @@ export function useSessionActions() {
         description: `${result?.closedCount || 0} positions closed. Trading continues.` 
       });
       
-      // Resume tick interval since session continues
+      // Resume intervals since session continues (only if still running)
       const currentStatus = useSessionStore.getState().status;
       if (currentStatus === 'running') {
         startTickInterval();
+        startPnlRefresh();
         startAutoTpCheck();
       }
       
@@ -463,7 +467,7 @@ export function useSessionActions() {
       // Clear pending action immediately after response
       dispatch({ type: 'SET_PENDING_ACTION', pendingAction: null });
     }
-  }, [dispatch, runTick, queryClient, clearTickInterval, clearAutoTpCheck, startTickInterval, startAutoTpCheck]);
+  }, [dispatch, runTick, queryClient, clearTickInterval, clearPnlRefresh, clearAutoTpCheck, startTickInterval, startPnlRefresh, startAutoTpCheck]);
 
   // ================================================================
   // CLOSE ALL - INSTANT atomic close + full stop to idle
@@ -474,6 +478,9 @@ export function useSessionActions() {
     clearTickInterval();
     clearPnlRefresh();
     clearAutoTpCheck();
+    
+    // CRITICAL: Reset tickInFlight so manual action can execute
+    tickInFlightRef.current = false;
     
     // Set pending action - spinner shows
     dispatch({ type: 'SET_PENDING_ACTION', pendingAction: 'closeAll' });
@@ -521,6 +528,8 @@ export function useSessionActions() {
         title: 'Session Closed', 
         description: `${result?.closedCount || 0} positions closed. Trading stopped.` 
       });
+      
+      // DO NOT restart any intervals - session is idle
       
     } catch (error) {
       console.error('Close all error:', error);
