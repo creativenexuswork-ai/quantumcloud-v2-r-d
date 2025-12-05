@@ -7,7 +7,8 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useTradingState } from './useSessionState';
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
-const TICK_INTERVAL_MS = 2000; // Trading tick interval (faster for responsive P&L)
+const TICK_INTERVAL_MS = 2000; // Trading tick interval - strategy execution
+const PNL_REFRESH_MS = 300; // P&L refresh interval - fast UI updates
 
 // Map UI mode to backend mode
 const MODE_TO_BACKEND: Record<TradingMode, string> = {
@@ -20,6 +21,7 @@ export function useSessionActions() {
   const { session: authSession } = useAuth();
   const queryClient = useQueryClient();
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
+  const pnlRefreshRef = useRef<NodeJS.Timeout | null>(null);
   const tickInFlightRef = useRef(false);
   const autoTpCheckRef = useRef<NodeJS.Timeout | null>(null);
   
@@ -39,6 +41,14 @@ export function useSessionActions() {
     }
   }, []);
 
+  // Clear P&L refresh interval
+  const clearPnlRefresh = useCallback(() => {
+    if (pnlRefreshRef.current) {
+      clearInterval(pnlRefreshRef.current);
+      pnlRefreshRef.current = null;
+    }
+  }, []);
+
   // Clear auto TP check
   const clearAutoTpCheck = useCallback(() => {
     if (autoTpCheckRef.current) {
@@ -47,14 +57,42 @@ export function useSessionActions() {
     }
   }, []);
 
+  // Fast P&L refresh - just fetches stats, no trade execution
+  const refreshPnl = useCallback(async () => {
+    try {
+      const { data: { session: currentSession } } = await supabase.auth.getSession();
+      if (!currentSession?.access_token) return;
+
+      const { data: stats } = await supabase.functions.invoke('paper-stats');
+      if (stats?.stats) {
+        dispatch({
+          type: 'SYNC_PNL',
+          pnlToday: stats.stats.todayPnl || 0,
+          tradesToday: stats.stats.tradesToday || 0,
+          winRate: stats.stats.winRate || 0,
+          equity: stats.stats.equity || 10000,
+        });
+        dispatch({
+          type: 'SYNC_POSITIONS',
+          hasPositions: (stats.stats.openPositionsCount || 0) > 0,
+          openCount: stats.stats.openPositionsCount || 0,
+        });
+      }
+    } catch (error) {
+      // Silent fail for P&L refresh - non-critical
+    }
+  }, [dispatch]);
+
   // Run a single tick - NO LONGER touches pendingAction (that's for user actions only)
   const runTick = useCallback(async (options?: { globalClose?: boolean; takeBurstProfit?: boolean; takeProfit?: boolean }) => {
     if (tickInFlightRef.current) return null;
     
     // CRITICAL: Before running tick, check if session is still running
-    // Skip regular ticks if session is idle/stopped (but allow globalClose through)
+    // Skip regular ticks if session is idle/stopped (but allow globalClose/takeProfit through)
     const currentStatus = useSessionStore.getState().status;
-    if (!options?.globalClose && !options?.takeBurstProfit) {
+    const isCloseAction = options?.globalClose || options?.takeProfit;
+    
+    if (!isCloseAction && !options?.takeBurstProfit) {
       if (currentStatus !== 'running' && currentStatus !== 'holding') {
         console.log(`[runTick] Skipping tick - session status is ${currentStatus}`);
         return null;
@@ -62,7 +100,6 @@ export function useSessionActions() {
     }
     
     tickInFlightRef.current = true;
-    // NOTE: We no longer dispatch SET_PENDING_ACTION here - polling is silent
     
     try {
       const { data: { session: currentSession } } = await supabase.auth.getSession();
@@ -94,7 +131,7 @@ export function useSessionActions() {
         dispatch({ type: 'SYNC_STATUS', status: data.sessionStatus });
       }
       
-      // Sync positions count
+      // Sync positions and P&L immediately from response
       if (data.stats) {
         dispatch({ 
           type: 'SYNC_POSITIONS', 
@@ -110,6 +147,7 @@ export function useSessionActions() {
         });
       }
       
+      // Invalidate queries for any other listeners
       queryClient.invalidateQueries({ queryKey: ['paper-stats'] });
       
       return data;
@@ -118,7 +156,6 @@ export function useSessionActions() {
       return null;
     } finally {
       tickInFlightRef.current = false;
-      // NOTE: We no longer dispatch SET_PENDING_ACTION here - polling is silent
     }
   }, [queryClient, dispatch]);
 
@@ -149,11 +186,28 @@ export function useSessionActions() {
           variant: 'destructive',
         });
         clearTickInterval();
+        clearPnlRefresh();
         clearAutoTpCheck();
         dispatch({ type: 'SET_HALTED', halted: true });
       }
     }, TICK_INTERVAL_MS);
-  }, [runTick, clearTickInterval, clearAutoTpCheck, dispatch]);
+  }, [runTick, clearTickInterval, clearPnlRefresh, clearAutoTpCheck, dispatch]);
+
+  // Start fast P&L refresh - runs independently from trading ticks
+  const startPnlRefresh = useCallback(() => {
+    clearPnlRefresh();
+    pnlRefreshRef.current = setInterval(async () => {
+      const currentStatus = useSessionStore.getState().status;
+      const pendingAction = useSessionStore.getState().pendingAction;
+      
+      // Only refresh P&L during active sessions (running or holding)
+      if (currentStatus !== 'running' && currentStatus !== 'holding') return;
+      // Skip during pending actions to avoid flicker
+      if (pendingAction) return;
+      
+      await refreshPnl();
+    }, PNL_REFRESH_MS);
+  }, [clearPnlRefresh, refreshPnl]);
 
   // Auto TP check - runs while engine is active
   const startAutoTpCheck = useCallback(() => {
@@ -273,6 +327,7 @@ export function useSessionActions() {
       }
       
       startTickInterval();
+      startPnlRefresh();
       startAutoTpCheck();
       
       toast({ 
@@ -287,7 +342,7 @@ export function useSessionActions() {
       // Always clear pending action when done
       dispatch({ type: 'SET_PENDING_ACTION', pendingAction: null });
     }
-  }, [dispatch, runTick, startTickInterval, startAutoTpCheck]);
+  }, [dispatch, runTick, startTickInterval, startPnlRefresh, startAutoTpCheck]);
 
   // HOLD - Stop opening new trades, but manage existing positions
   const holdToggle = useCallback(async () => {
@@ -337,7 +392,7 @@ export function useSessionActions() {
     await queryClient.invalidateQueries({ queryKey: ['paper-stats'] });
   }, [queryClient]);
 
-  // TAKE PROFIT - Close all positions INSTANTLY, stay running (auto-resume from flat)
+  // TAKE PROFIT - Close all positions INSTANTLY, session continues unchanged
   const takeProfit = useCallback(async () => {
     const state = useSessionStore.getState();
     
@@ -345,6 +400,7 @@ export function useSessionActions() {
       return;
     }
     
+    // Set pending immediately to disable buttons
     dispatch({ type: 'SET_PENDING_ACTION', pendingAction: 'takeProfit' });
     
     // Optimistic update - show positions closed (status stays the same)
@@ -352,12 +408,12 @@ export function useSessionActions() {
     dispatch({ type: 'TAKE_PROFIT' }); // Clears positions, status unchanged
     
     try {
-      const { data: { user } } = await supabase.auth.getUser();
-      
-      // Close all positions via backend using takeProfit option (does NOT change session state)
+      // Close all positions via backend - returns immediately with stats
+      // CRITICAL: takeProfit flag makes backend close positions and return early
+      // NO new trades are opened on this tick
       const result = await runTick({ takeProfit: true });
       
-      // Sync stats from result immediately
+      // Sync stats from result IMMEDIATELY - this is the authoritative data
       if (result?.stats) {
         dispatch({
           type: 'SYNC_PNL',
@@ -366,19 +422,14 @@ export function useSessionActions() {
           winRate: result.stats.winRate || 0,
           equity: result.stats.equity || 10000,
         });
-      }
-      
-      // Log the event
-      if (user) {
-        await supabase.from('system_logs').insert({
-          user_id: user.id,
-          level: 'info',
-          source: 'execution',
-          message: `TAKE PROFIT: All positions closed. Session continues.`,
+        dispatch({
+          type: 'SYNC_POSITIONS',
+          hasPositions: (result.stats.openPositionsCount || 0) > 0,
+          openCount: result.stats.openPositionsCount || 0,
         });
       }
       
-      // Force immediate refresh of stats
+      // Force immediate query refresh for any other listeners
       await queryClient.invalidateQueries({ queryKey: ['paper-stats'] });
       
       toast({ 
@@ -389,14 +440,16 @@ export function useSessionActions() {
       console.error('Take profit error:', error);
       toast({ title: 'Error', description: 'Failed to take profit', variant: 'destructive' });
     } finally {
+      // Clear pending action - buttons become active again
       dispatch({ type: 'SET_PENDING_ACTION', pendingAction: null });
     }
   }, [dispatch, runTick, queryClient]);
 
   // CLOSE ALL - Emergency close and full stop (FAST, NO NEW TRADES EVER)
   const closeAll = useCallback(async () => {
-    // IMMEDIATELY stop all tick intervals FIRST - this is critical
+    // IMMEDIATELY stop ALL intervals FIRST - this is critical
     clearTickInterval();
+    clearPnlRefresh();
     clearAutoTpCheck();
     
     dispatch({ type: 'SET_PENDING_ACTION', pendingAction: 'closeAll' });
@@ -420,10 +473,10 @@ export function useSessionActions() {
       }
       
       // Now call backend global close to actually close positions
-      // The backend will return early after closing - no mode execution
+      // The backend returns early after closing - NO mode execution happens
       const result = await runTick({ globalClose: true });
       
-      // Sync stats from result immediately
+      // Sync stats from result IMMEDIATELY - this is the authoritative data
       if (result?.stats) {
         dispatch({
           type: 'SYNC_PNL',
@@ -432,9 +485,14 @@ export function useSessionActions() {
           winRate: result.stats.winRate || 0,
           equity: result.stats.equity || 10000,
         });
+        dispatch({
+          type: 'SYNC_POSITIONS',
+          hasPositions: (result.stats.openPositionsCount || 0) > 0,
+          openCount: result.stats.openPositionsCount || 0,
+        });
       }
       
-      // Force immediate refresh of stats
+      // Force immediate query refresh
       await queryClient.invalidateQueries({ queryKey: ['paper-stats'] });
       
       toast({ title: 'Session Stopped', description: 'All positions closed. Engine idle.' });
@@ -442,16 +500,18 @@ export function useSessionActions() {
       console.error('Close all error:', error);
       toast({ title: 'Error', description: 'Failed to close positions', variant: 'destructive' });
     } finally {
+      // Clear pending action - buttons become active again
       dispatch({ type: 'SET_PENDING_ACTION', pendingAction: null });
     }
-  }, [dispatch, runTick, clearTickInterval, clearAutoTpCheck, queryClient]);
+  }, [dispatch, runTick, clearTickInterval, clearPnlRefresh, clearAutoTpCheck, queryClient]);
 
   // Reset session
   const resetSession = useCallback(() => {
     clearTickInterval();
+    clearPnlRefresh();
     clearAutoTpCheck();
     dispatch({ type: 'RESET' });
-  }, [dispatch, clearTickInterval, clearAutoTpCheck]);
+  }, [dispatch, clearTickInterval, clearPnlRefresh, clearAutoTpCheck]);
 
   // Change trading mode
   const changeMode = useCallback(async (newMode: TradingMode) => {
@@ -520,9 +580,10 @@ export function useSessionActions() {
     return () => {
       mounted = false;
       clearTickInterval();
+      clearPnlRefresh();
       clearAutoTpCheck();
     };
-  }, [authSession?.user?.id, dispatch, clearTickInterval, clearAutoTpCheck]);
+  }, [authSession?.user?.id, dispatch, clearTickInterval, clearPnlRefresh, clearAutoTpCheck]);
 
   return {
     // Session state
