@@ -360,12 +360,253 @@ serve(async (req) => {
     const body = await req.json().catch(() => ({}));
     const { burstRequested, globalClose, takeBurstProfit, takeProfit } = body;
 
-    // Fetch latest prices
+    // ================================================================
+    // CRITICAL: MANUAL ACTION GUARD - Check FIRST, return EARLY
+    // If this is a manual action (takeProfit or globalClose), we:
+    // 1. Close all positions
+    // 2. Return immediately
+    // 3. NEVER run mode logic
+    // ================================================================
+    const isManualAction = takeProfit === true || globalClose === true;
+    
+    if (isManualAction) {
+      console.log(`[MANUAL_ACTION] Detected: takeProfit=${takeProfit}, globalClose=${globalClose}`);
+    }
+
+    // Fetch latest prices (needed for closing positions at current price)
     const priceResponse = await fetch(`${supabaseUrl}/functions/v1/price-feed`, {
       headers: { Authorization: `Bearer ${supabaseKey}` },
     });
     const { ticks } = await priceResponse.json();
 
+    // Get today's date for trade records
+    const today = new Date().toISOString().split('T')[0];
+
+    // ================================================================
+    // TAKE PROFIT HANDLER - Atomic, returns immediately
+    // ================================================================
+    if (takeProfit === true) {
+      console.log(`[TAKE_PROFIT] Starting atomic close for user ${userId}`);
+      
+      // Fetch all open positions
+      const { data: allPositions } = await supabase
+        .from('paper_positions')
+        .select('*')
+        .eq('user_id', userId)
+        .eq('closed', false);
+      
+      const closedCount = (allPositions || []).length;
+      let closePnl = 0;
+      
+      // Fetch existing trades for stats
+      const { data: existingTrades } = await supabase
+        .from('paper_trades')
+        .select('*')
+        .eq('user_id', userId)
+        .eq('session_date', today);
+      
+      const existingRealizedPnl = (existingTrades || []).reduce((sum: number, t: any) => sum + Number(t.realized_pnl), 0);
+      
+      // Get starting equity
+      const { data: dailyStats } = await supabase
+        .from('paper_stats_daily')
+        .select('equity_start')
+        .eq('user_id', userId)
+        .eq('trade_date', today)
+        .maybeSingle();
+      
+      const { data: account } = await supabase
+        .from('accounts')
+        .select('equity')
+        .eq('user_id', userId)
+        .eq('type', 'paper')
+        .maybeSingle();
+      
+      const startingEquity = dailyStats?.equity_start ?? account?.equity ?? 10000;
+      
+      // Get current session status to preserve it
+      const { data: config } = await supabase
+        .from('paper_config')
+        .select('session_status')
+        .eq('user_id', userId)
+        .maybeSingle();
+      
+      const currentSessionStatus = config?.session_status || 'running';
+      
+      if (closedCount > 0) {
+        // Build trade records
+        const tradeRecords = (allPositions || []).map(pos => {
+          const tick = ticks[pos.symbol];
+          const exitPrice = tick ? (pos.side === 'long' ? tick.bid : tick.ask) : Number(pos.entry_price);
+          const priceDiff = pos.side === 'long' ? exitPrice - Number(pos.entry_price) : Number(pos.entry_price) - exitPrice;
+          const pnl = priceDiff * Number(pos.size);
+          closePnl += pnl;
+          
+          return {
+            user_id: userId, symbol: pos.symbol, mode: pos.mode, side: pos.side,
+            size: pos.size, entry_price: pos.entry_price, exit_price: exitPrice,
+            sl: pos.sl, tp: pos.tp, opened_at: pos.opened_at,
+            realized_pnl: pnl, reason: 'take_profit', session_date: today, batch_id: pos.batch_id,
+          };
+        });
+        
+        // Batch operations - DO NOT change session status
+        await Promise.all([
+          supabase.from('paper_trades').insert(tradeRecords),
+          supabase.from('paper_positions').delete().eq('user_id', userId).eq('closed', false),
+          supabase.from('system_logs').insert({
+            user_id: userId, level: 'info', source: 'execution',
+            message: `TAKE PROFIT: ${closedCount} positions closed. Session continues (${currentSessionStatus}).`,
+          }),
+        ]);
+      } else {
+        await supabase.from('system_logs').insert({
+          user_id: userId, level: 'info', source: 'execution',
+          message: `TAKE PROFIT: No open positions to close.`,
+        });
+      }
+      
+      // Calculate final stats
+      const totalRealizedPnl = existingRealizedPnl + closePnl;
+      const finalTradesToday = (existingTrades?.length || 0) + closedCount;
+      const wins = (existingTrades || []).filter((t: any) => Number(t.realized_pnl) > 0).length + (closePnl > 0 ? 1 : 0);
+      
+      console.log(`[TAKE_PROFIT] Complete: closed=${closedCount}, pnl=${closePnl.toFixed(2)}, status unchanged=${currentSessionStatus}`);
+      
+      // CRITICAL: Return immediately - NO mode execution
+      return new Response(JSON.stringify({ 
+        success: true, 
+        action: 'takeProfit',
+        closedCount,
+        sessionStatus: currentSessionStatus, // Status unchanged
+        stats: {
+          todayPnl: totalRealizedPnl,
+          tradesToday: finalTradesToday,
+          openPositionsCount: 0,
+          equity: startingEquity + totalRealizedPnl,
+          winRate: finalTradesToday > 0 ? (wins / finalTradesToday) * 100 : 50,
+        }
+      }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
+    // ================================================================
+    // GLOBAL CLOSE HANDLER - Atomic, returns immediately, sets status to idle
+    // ================================================================
+    if (globalClose === true) {
+      console.log(`[GLOBAL_CLOSE] Starting atomic close and stop for user ${userId}`);
+      
+      // Fetch all open positions
+      const { data: allPositions } = await supabase
+        .from('paper_positions')
+        .select('*')
+        .eq('user_id', userId)
+        .eq('closed', false);
+      
+      const closedCount = (allPositions || []).length;
+      let closePnl = 0;
+      
+      // Fetch existing trades for stats
+      const { data: existingTrades } = await supabase
+        .from('paper_trades')
+        .select('*')
+        .eq('user_id', userId)
+        .eq('session_date', today);
+      
+      const existingRealizedPnl = (existingTrades || []).reduce((sum: number, t: any) => sum + Number(t.realized_pnl), 0);
+      
+      // Get starting equity
+      const { data: dailyStats } = await supabase
+        .from('paper_stats_daily')
+        .select('equity_start')
+        .eq('user_id', userId)
+        .eq('trade_date', today)
+        .maybeSingle();
+      
+      const { data: account } = await supabase
+        .from('accounts')
+        .select('equity')
+        .eq('user_id', userId)
+        .eq('type', 'paper')
+        .maybeSingle();
+      
+      const startingEquity = dailyStats?.equity_start ?? account?.equity ?? 10000;
+      
+      if (closedCount > 0) {
+        // Build trade records
+        const tradeRecords = (allPositions || []).map(pos => {
+          const tick = ticks[pos.symbol];
+          const exitPrice = tick ? (pos.side === 'long' ? tick.bid : tick.ask) : Number(pos.entry_price);
+          const priceDiff = pos.side === 'long' ? exitPrice - Number(pos.entry_price) : Number(pos.entry_price) - exitPrice;
+          const pnl = priceDiff * Number(pos.size);
+          closePnl += pnl;
+          
+          return {
+            user_id: userId, symbol: pos.symbol, mode: pos.mode, side: pos.side,
+            size: pos.size, entry_price: pos.entry_price, exit_price: exitPrice,
+            sl: pos.sl, tp: pos.tp, opened_at: pos.opened_at,
+            realized_pnl: pnl, reason: 'global_close', session_date: today, batch_id: pos.batch_id,
+          };
+        });
+        
+        // Batch operations - Close all, set session to idle
+        await Promise.all([
+          supabase.from('paper_trades').insert(tradeRecords),
+          supabase.from('paper_positions').delete().eq('user_id', userId).eq('closed', false),
+          supabase.from('paper_config').update({ 
+            session_status: 'idle',
+            is_running: false,
+            burst_requested: false
+          }).eq('user_id', userId),
+          supabase.from('system_logs').insert({
+            user_id: userId, level: 'info', source: 'execution',
+            message: `CLOSE ALL: ${closedCount} positions closed. Session stopped.`,
+          }),
+        ]);
+      } else {
+        // No positions, just update config
+        await Promise.all([
+          supabase.from('paper_config').update({ 
+            session_status: 'idle',
+            is_running: false,
+            burst_requested: false
+          }).eq('user_id', userId),
+          supabase.from('system_logs').insert({
+            user_id: userId, level: 'info', source: 'execution',
+            message: `CLOSE ALL: No open positions. Session stopped.`,
+          }),
+        ]);
+      }
+      
+      // Calculate final stats
+      const totalRealizedPnl = existingRealizedPnl + closePnl;
+      const finalTradesToday = (existingTrades?.length || 0) + closedCount;
+      
+      console.log(`[GLOBAL_CLOSE] Complete: closed=${closedCount}, pnl=${closePnl.toFixed(2)}, status=idle`);
+      
+      // CRITICAL: Return immediately - NO mode execution
+      return new Response(JSON.stringify({ 
+        success: true, 
+        action: 'globalClose',
+        closedCount,
+        sessionStatus: 'idle', // Always idle after close all
+        stats: {
+          todayPnl: totalRealizedPnl,
+          tradesToday: finalTradesToday,
+          openPositionsCount: 0,
+          equity: startingEquity + totalRealizedPnl,
+          winRate: 50,
+        }
+      }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
+    // ================================================================
+    // REGULAR TICK - Only runs if NOT a manual action
+    // ================================================================
+    
     // Load or create paper config
     let { data: config } = await supabase
       .from('paper_config')
@@ -395,7 +636,6 @@ serve(async (req) => {
     const modeConfig = config.mode_config || DEFAULT_MODE_CONFIG;
     const marketConfig = config.market_config || DEFAULT_MARKET_CONFIG;
     const sessionStatus: SessionStatus = config.session_status || 'idle';
-    const today = new Date().toISOString().split('T')[0];
 
     // Get starting equity
     const { data: dailyStats } = await supabase
@@ -471,141 +711,7 @@ serve(async (req) => {
       }).eq('user_id', userId);
     }
 
-    // Handle TAKE PROFIT - close all positions FAST, keep session running, NO mode execution
-    // CRITICAL: This must return early - no new trades on same tick as TP
-    if (takeProfit) {
-      const { data: allPositions } = await supabase.from('paper_positions').select('*').eq('user_id', userId).eq('closed', false);
-      const closedCount = (allPositions || []).length;
-      let closePnl = 0;
-      
-      if (closedCount > 0) {
-        const tradeRecords = (allPositions || []).map(pos => {
-          const tick = ticks[pos.symbol];
-          const exitPrice = tick ? (pos.side === 'long' ? tick.bid : tick.ask) : Number(pos.entry_price);
-          const priceDiff = pos.side === 'long' ? exitPrice - Number(pos.entry_price) : Number(pos.entry_price) - exitPrice;
-          const pnl = priceDiff * Number(pos.size);
-          closePnl += pnl;
-          
-          return {
-            user_id: userId, symbol: pos.symbol, mode: pos.mode, side: pos.side,
-            size: pos.size, entry_price: pos.entry_price, exit_price: exitPrice,
-            sl: pos.sl, tp: pos.tp, opened_at: pos.opened_at,
-            realized_pnl: pnl, reason: 'take_profit', session_date: today, batch_id: pos.batch_id,
-          };
-        });
-        
-        // Batch close - DO NOT change session status (stays running/holding)
-        await Promise.all([
-          supabase.from('paper_trades').insert(tradeRecords),
-          supabase.from('paper_positions').delete().eq('user_id', userId),
-          supabase.from('system_logs').insert({
-            user_id: userId, level: 'info', source: 'execution',
-            message: `TAKE PROFIT: ${closedCount} positions closed. Session continues in ${sessionStatus} state.`,
-          }),
-        ]);
-      }
-      
-      // Calculate final P&L for immediate frontend refresh
-      const totalRealizedPnl = realizedPnl + closePnl;
-      const finalTradesToday = (todayTrades?.length || 0) + closedCount;
-      
-      // CRITICAL: Return early - NO mode execution happens after this
-      console.log(`[TAKE_PROFIT] Closed ${closedCount} positions, returning early. Session stays ${sessionStatus}.`);
-      return new Response(JSON.stringify({ 
-        success: true, 
-        action: 'takeProfit',
-        closedCount,
-        sessionStatus: sessionStatus, // Keep current status unchanged
-        stats: {
-          todayPnl: totalRealizedPnl,
-          tradesToday: finalTradesToday,
-          openPositionsCount: 0,
-          equity: startingEquity + totalRealizedPnl,
-          winRate: finalTradesToday > 0 ? ((todayTrades || []).filter((t: any) => Number(t.realized_pnl) > 0).length + (closePnl > 0 ? closedCount : 0)) / finalTradesToday * 100 : 50,
-        }
-      }), {
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      });
-    }
-
-    // Handle global close - close all positions and STOP session (BATCHED for speed)
-    // CRITICAL: Return early after global close to prevent any new trades from opening
-    if (globalClose) {
-      const { data: allPositions } = await supabase.from('paper_positions').select('*').eq('user_id', userId).eq('closed', false);
-      const closedCount = (allPositions || []).length;
-      
-      // Calculate realized P&L for the response
-      const { data: todayTradesNow } = await supabase.from('paper_trades').select('*').eq('user_id', userId).eq('session_date', today);
-      const existingRealizedPnl = (todayTradesNow || []).reduce((sum: number, t: any) => sum + Number(t.realized_pnl), 0);
-      let closePnl = 0;
-      
-      if (closedCount > 0) {
-        // Build all trade records in memory first (no await)
-        const tradeRecords = (allPositions || []).map(pos => {
-          const tick = ticks[pos.symbol];
-          const exitPrice = tick ? (pos.side === 'long' ? tick.bid : tick.ask) : Number(pos.entry_price);
-          const priceDiff = pos.side === 'long' ? exitPrice - Number(pos.entry_price) : Number(pos.entry_price) - exitPrice;
-          const pnl = priceDiff * Number(pos.size);
-          closePnl += pnl;
-          
-          return {
-            user_id: userId, symbol: pos.symbol, mode: pos.mode, side: pos.side,
-            size: pos.size, entry_price: pos.entry_price, exit_price: exitPrice,
-            sl: pos.sl, tp: pos.tp, opened_at: pos.opened_at,
-            realized_pnl: pnl, reason: 'global_close', session_date: today, batch_id: pos.batch_id,
-          };
-        });
-        
-        // Batch insert all trades + delete all positions + update config in parallel
-        await Promise.all([
-          supabase.from('paper_trades').insert(tradeRecords),
-          supabase.from('paper_positions').delete().eq('user_id', userId),
-          supabase.from('paper_config').update({ 
-            session_status: 'idle',
-            is_running: false,
-            burst_requested: false
-          }).eq('user_id', userId),
-          supabase.from('system_logs').insert({
-            user_id: userId, level: 'info', source: 'execution',
-            message: `SESSION: Stopped. Global close completed; ${closedCount} positions closed`,
-          }),
-        ]);
-      } else {
-        // No positions, just update config
-        await Promise.all([
-          supabase.from('paper_config').update({ 
-            session_status: 'idle',
-            is_running: false,
-            burst_requested: false
-          }).eq('user_id', userId),
-          supabase.from('system_logs').insert({
-            user_id: userId, level: 'info', source: 'execution',
-            message: `SESSION: Stopped. No open positions to close.`,
-          }),
-        ]);
-      }
-      
-      // CRITICAL: Return early to prevent any further mode execution
-      const totalRealizedPnl = existingRealizedPnl + closePnl;
-      return new Response(JSON.stringify({ 
-        success: true, 
-        action: 'globalClose',
-        closedCount,
-        sessionStatus: 'idle',
-        halted: isHalted,
-        stats: {
-          todayPnl: totalRealizedPnl,
-          tradesToday: (todayTradesNow?.length || 0) + closedCount,
-          openPositionsCount: 0,
-          equity: startingEquity + totalRealizedPnl,
-          winRate: 50,
-        }
-      }), {
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      });
-    }
-
-    // Handle take burst profit (BATCHED for speed)
+    // Handle take burst profit
     if (takeBurstProfit) {
       const { data: burstPositions } = await supabase.from('paper_positions').select('*').eq('user_id', userId).eq('mode', 'burst');
       const burstCount = (burstPositions || []).length;
@@ -651,10 +757,6 @@ serve(async (req) => {
 
     // Re-fetch positions after closures
     const { data: currentPositions } = await supabase.from('paper_positions').select('*').eq('user_id', userId).eq('closed', false);
-
-    // Re-fetch session status (may have changed from global close)
-    const { data: updatedConfig } = await supabase.from('paper_config').select('session_status').eq('user_id', userId).maybeSingle();
-    const currentSessionStatus: SessionStatus = updatedConfig?.session_status || sessionStatus;
 
     // Mark positions to market and check SL/TP (always do this, even when holding)
     for (const pos of (currentPositions || [])) {
@@ -716,14 +818,12 @@ serve(async (req) => {
     const finalWinRate = finalClosedCount > 0 ? (finalWins / finalClosedCount) * 100 : 50;
 
     // CRITICAL: Re-fetch session status right before deciding to open new trades
-    // This prevents race conditions where Close All was clicked but DB hasn't fully propagated
     const { data: freshConfig } = await supabase.from('paper_config').select('session_status, is_running').eq('user_id', userId).maybeSingle();
     const freshSessionStatus: SessionStatus = freshConfig?.session_status || 'idle';
     const freshIsRunning = freshConfig?.is_running ?? false;
     
     // Determine if we should run modes (ONLY when status is explicitly 'running' AND is_running is true)
-    // CRITICAL: Also check !takeProfit (defensive - should never reach here due to early return)
-    const shouldRunModes = freshSessionStatus === 'running' && freshIsRunning && !isHalted && !config.trading_halted_for_day && !globalClose && !takeBurstProfit && !takeProfit;
+    const shouldRunModes = freshSessionStatus === 'running' && freshIsRunning && !isHalted && !config.trading_halted_for_day;
     
     console.log(`[ENGINE] sessionStatus=${freshSessionStatus}, is_running=${freshIsRunning}, shouldRunModes=${shouldRunModes}, enabledModes=${JSON.stringify(modeConfig.enabledModes)}`);
     
@@ -792,7 +892,6 @@ serve(async (req) => {
         }
 
         // Apply risk guardrails and open positions
-        // Track separately: risk-blocked vs db-errors
         let openedCount = 0;
         let riskBlockedCount = 0;
         let dbErrorCount = 0;
@@ -869,115 +968,54 @@ serve(async (req) => {
           });
         }
         
-        // Log risk-blocked orders (separate from db errors)
+        // Log risk-blocked orders
         if (riskBlockedCount > 0) {
+          const uniqueReasons = [...new Set(riskBlockReasons)].slice(0, 3).join(', ');
           await supabase.from('system_logs').insert({
-            user_id: userId,
-            level: 'info',
-            source: 'risk',
-            message: `RISK: ${riskBlockedCount} order(s) blocked by risk limits`,
-            meta: { blocked: riskBlockedCount, reasons: riskBlockReasons.slice(0, 10) },
+            user_id: userId, level: 'warn', source: 'risk',
+            message: `RISK: ${riskBlockedCount} order(s) blocked (${uniqueReasons})`,
+            meta: { blocked: riskBlockedCount, reasons: riskBlockReasons },
           });
         }
         
-        // Log db errors separately
+        // Log DB errors separately
         if (dbErrorCount > 0) {
+          const uniqueErrors = [...new Set(dbErrors)].slice(0, 3).join(', ');
           await supabase.from('system_logs').insert({
-            user_id: userId,
-            level: 'error',
-            source: 'execution',
-            message: `ERROR: ${dbErrorCount} order(s) failed to insert (database error)`,
-            meta: { failed: dbErrorCount, errors: dbErrors.slice(0, 10) },
-          });
-        }
-
-        // Reset burst flag after burst executes
-        if (config.burst_requested && openedByMode['burst']) {
-          await supabase.from('paper_config').update({ burst_requested: false }).eq('user_id', userId);
-        }
-      } else {
-        console.log(`[ENGINE] Cannot open positions: remainingCapacity=${remainingRiskCapacity.toFixed(2)}%, availableSlots=${availableSlots}`);
-        if (remainingRiskCapacity <= 0) {
-          await supabase.from('system_logs').insert({
-            user_id: userId, level: 'warn', source: 'risk',
-            message: `RISK: Max concurrent risk reached (${currentRiskExposure.toFixed(1)}%) - no new positions`,
+            user_id: userId, level: 'error', source: 'execution',
+            message: `ERROR: ${dbErrorCount} order(s) failed to insert (${uniqueErrors})`,
+            meta: { errors: dbErrors },
           });
         }
       }
-    } else if (currentSessionStatus === 'holding') {
-      // Log that we're in holding state (only occasionally to avoid spam)
-      console.log(`[ENGINE] Session on hold - managing existing positions only`);
-    } else {
-      console.log(`[ENGINE] Not running modes: sessionStatus=${currentSessionStatus}, isHalted=${isHalted}, tradingHalted=${config.trading_halted_for_day}`);
     }
 
-    // Final stats calculation
-    const { data: endPositions } = await supabase.from('paper_positions').select('*').eq('user_id', userId).eq('closed', false);
-    const { data: endTrades } = await supabase.from('paper_trades').select('*').eq('user_id', userId).eq('session_date', today);
+    // Final position count
+    const { data: veryFinalPositions } = await supabase.from('paper_positions').select('id').eq('user_id', userId).eq('closed', false);
+    const { data: veryFinalTrades } = await supabase.from('paper_trades').select('realized_pnl').eq('user_id', userId).eq('session_date', today);
+    
+    const veryFinalRealizedPnl = (veryFinalTrades || []).reduce((sum: number, t: any) => sum + Number(t.realized_pnl), 0);
 
-    const endRealizedPnl = (endTrades || []).reduce((sum: number, t: any) => sum + Number(t.realized_pnl), 0);
-    const endUnrealizedPnl = (endPositions || []).reduce((sum: number, p: any) => sum + Number(p.unrealized_pnl || 0), 0);
-    const endTodayPnl = endRealizedPnl + endUnrealizedPnl;
-    const endTodayPnlPercent = startingEquity > 0 ? (endTodayPnl / startingEquity) * 100 : 0;
-    const endClosedCount = (endTrades || []).length;
-    const endWins = (endTrades || []).filter((t: any) => Number(t.realized_pnl) > 0).length;
-    const endWinRate = endClosedCount > 0 ? (endWins / endClosedCount) * 100 : 0;
-
-    // Calculate avg R:R
-    const profitTrades = (endTrades || []).filter((t: any) => Number(t.realized_pnl) > 0);
-    const lossTrades = (endTrades || []).filter((t: any) => Number(t.realized_pnl) < 0);
-    const avgWin = profitTrades.length > 0 ? profitTrades.reduce((s: number, t: any) => s + Number(t.realized_pnl), 0) / profitTrades.length : 0;
-    const avgLoss = lossTrades.length > 0 ? Math.abs(lossTrades.reduce((s: number, t: any) => s + Number(t.realized_pnl), 0) / lossTrades.length) : 1;
-    const avgRR = avgLoss > 0 ? avgWin / avgLoss : 0;
-
-    // Burst stats
-    const burstTrades = (endTrades || []).filter((t: any) => t.mode === 'burst');
-    const burstPnl = burstTrades.reduce((sum: number, t: any) => sum + Number(t.realized_pnl), 0);
-    const burstPnlPercent = startingEquity > 0 ? (burstPnl / startingEquity) * 100 : 0;
-    const burstPositions = (endPositions || []).filter((p: any) => p.mode === 'burst');
-    const burstStatus = burstPositions.length > 0 ? 'running' : burstPnlPercent >= burstConfig.dailyProfitTargetPercent ? 'locked' : 'idle';
-
-    // Update daily stats
-    await supabase.from('paper_stats_daily').upsert({
-      user_id: userId, trade_date: today,
-      equity_start: startingEquity, equity_end: startingEquity + endTodayPnl,
-      pnl: endTodayPnl, win_rate: endWinRate, trades_count: endClosedCount,
-    }, { onConflict: 'user_id,trade_date' });
-
-    // Update account equity
-    await supabase.from('accounts').update({ equity: startingEquity + endTodayPnl }).eq('user_id', userId).eq('type', 'paper');
-
-    const stats = {
-      equity: startingEquity + endTodayPnl,
-      todayPnl: endTodayPnl,
-      todayPnlPercent: endTodayPnlPercent,
-      winRate: endWinRate,
-      avgRR: avgRR,
-      tradesToday: endClosedCount,
-      maxDrawdown: 0,
-      openPositionsCount: (endPositions || []).length,
-      burstPnlToday: burstPnlPercent,
-      burstsToday: new Set(burstTrades.map((t: any) => t.batch_id).filter(Boolean)).size,
-      burstStatus,
-    };
-
-    return new Response(JSON.stringify({
-      stats,
-      positions: endPositions,
-      trades: endTrades,
-      ticks,
-      halted: isHalted || config.trading_halted_for_day,
-      sessionStatus: currentSessionStatus,
+    return new Response(JSON.stringify({ 
+      success: true, 
+      sessionStatus: freshSessionStatus,
+      halted: isHalted,
+      stats: {
+        todayPnl: finalTodayPnl,
+        todayPnlPercent: finalTodayPnlPercent,
+        tradesToday: finalClosedCount,
+        openPositionsCount: (veryFinalPositions || []).length,
+        equity: startingEquity + veryFinalRealizedPnl,
+        winRate: finalWinRate,
+      }
     }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });
-
-  } catch (error: unknown) {
+  } catch (error) {
     console.error('Paper tick error:', error);
-    const message = error instanceof Error ? error.message : 'Unknown error';
-    return new Response(JSON.stringify({ error: message }), {
-      status: 500,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    return new Response(JSON.stringify({ error: errorMessage }), {
+      status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });
   }
 });

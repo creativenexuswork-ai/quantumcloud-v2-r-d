@@ -24,6 +24,8 @@ export function useSessionActions() {
   const pnlRefreshRef = useRef<NodeJS.Timeout | null>(null);
   const tickInFlightRef = useRef(false);
   const autoTpCheckRef = useRef<NodeJS.Timeout | null>(null);
+  // CRITICAL: Track manual action in progress to block ALL ticks
+  const manualActionInProgressRef = useRef(false);
   
   // Get state and dispatch from store
   const sessionState = useSessionStore();
@@ -59,6 +61,11 @@ export function useSessionActions() {
 
   // Fast P&L refresh - just fetches stats, no trade execution
   const refreshPnl = useCallback(async () => {
+    // CRITICAL: Block P&L refresh during manual actions to prevent flicker
+    if (manualActionInProgressRef.current) {
+      return;
+    }
+    
     try {
       const { data: { session: currentSession } } = await supabase.auth.getSession();
       if (!currentSession?.access_token) return;
@@ -83,17 +90,22 @@ export function useSessionActions() {
     }
   }, [dispatch]);
 
-  // Run a single tick - NO LONGER touches pendingAction (that's for user actions only)
+  // Run a single tick - strategy execution only
   const runTick = useCallback(async (options?: { globalClose?: boolean; takeBurstProfit?: boolean; takeProfit?: boolean }) => {
+    // CRITICAL: Never run tick if manual action is in progress
+    if (manualActionInProgressRef.current && !options?.globalClose && !options?.takeProfit) {
+      console.log(`[runTick] Blocked - manual action in progress`);
+      return null;
+    }
+    
     if (tickInFlightRef.current) return null;
     
-    // CRITICAL: Before running tick, check if session is still running
-    // Skip regular ticks if session is idle/stopped (but allow globalClose/takeProfit through)
     const currentStatus = useSessionStore.getState().status;
     const isCloseAction = options?.globalClose || options?.takeProfit;
     
+    // Regular ticks only run when session is 'running'
     if (!isCloseAction && !options?.takeBurstProfit) {
-      if (currentStatus !== 'running' && currentStatus !== 'holding') {
+      if (currentStatus !== 'running') {
         console.log(`[runTick] Skipping tick - session status is ${currentStatus}`);
         return null;
       }
@@ -126,7 +138,7 @@ export function useSessionActions() {
         dispatch({ type: 'SET_HALTED', halted: data.halted });
       }
       
-      // Sync session status from backend (important for Close All)
+      // Sync session status from backend
       if (data.sessionStatus) {
         dispatch({ type: 'SYNC_STATUS', status: data.sessionStatus });
       }
@@ -166,13 +178,13 @@ export function useSessionActions() {
       const currentStatus = useSessionStore.getState().status;
       const pendingAction = useSessionStore.getState().pendingAction;
       
-      // CRITICAL: Do NOT tick if any action is pending (user clicked a button)
-      if (pendingAction) {
-        console.log(`[Tick Interval] Skipping - pending action: ${pendingAction}`);
+      // CRITICAL: Do NOT tick if any action is pending OR manual action in progress
+      if (pendingAction || manualActionInProgressRef.current) {
+        console.log(`[Tick Interval] Skipping - pending: ${pendingAction}, manual: ${manualActionInProgressRef.current}`);
         return;
       }
       
-      // Only tick if explicitly running - NOT holding, idle, or stopped
+      // Only tick if explicitly running
       if (currentStatus !== 'running') {
         console.log(`[Tick Interval] Skipping - status is ${currentStatus}`);
         return;
@@ -200,10 +212,10 @@ export function useSessionActions() {
       const currentStatus = useSessionStore.getState().status;
       const pendingAction = useSessionStore.getState().pendingAction;
       
-      // Only refresh P&L during active sessions (running or holding)
+      // Only refresh P&L during active sessions
       if (currentStatus !== 'running' && currentStatus !== 'holding') return;
-      // Skip during pending actions to avoid flicker
-      if (pendingAction) return;
+      // Skip during pending actions or manual actions
+      if (pendingAction || manualActionInProgressRef.current) return;
       
       await refreshPnl();
     }, PNL_REFRESH_MS);
@@ -217,14 +229,13 @@ export function useSessionActions() {
       const state = useSessionStore.getState();
       const { riskSettings: currentRiskSettings } = useTradingState.getState();
       
-      // Only check auto TP when running
-      if (state.status !== 'running') return;
+      // Only check auto TP when running and no manual action in progress
+      if (state.status !== 'running' || manualActionInProgressRef.current) return;
       
       // Get current P&L data
       const { data: stats } = await supabase.functions.invoke('paper-stats');
       if (!stats?.stats) return;
       
-      const equity = stats.stats.equity || 10000;
       const todayPnlPercent = stats.stats.todayPnlPercent || 0;
       const tpTarget = currentRiskSettings.dailyProfitTarget;
       
@@ -256,7 +267,7 @@ export function useSessionActions() {
         
         queryClient.invalidateQueries({ queryKey: ['paper-stats'] });
       }
-    }, TICK_INTERVAL_MS * 2); // Check every 8 seconds
+    }, TICK_INTERVAL_MS * 2);
   }, [runTick, queryClient, clearAutoTpCheck]);
 
   // ACTIVATE - Start trading session OR Resume from holding
@@ -339,7 +350,6 @@ export function useSessionActions() {
       dispatch({ type: 'ERROR', error: 'Failed to start session' });
       toast({ title: 'Error', description: 'Failed to activate session', variant: 'destructive' });
     } finally {
-      // Always clear pending action when done
       dispatch({ type: 'SET_PENDING_ACTION', pendingAction: null });
     }
   }, [dispatch, runTick, startTickInterval, startPnlRefresh, startAutoTpCheck]);
@@ -387,12 +397,10 @@ export function useSessionActions() {
     }
   }, [dispatch, clearAutoTpCheck]);
 
-  // Immediate stats refresh helper
-  const refreshStats = useCallback(async () => {
-    await queryClient.invalidateQueries({ queryKey: ['paper-stats'] });
-  }, [queryClient]);
-
-  // TAKE PROFIT - Close all positions INSTANTLY, session continues unchanged
+  // ================================================================
+  // TAKE PROFIT - INSTANT, ATOMIC close all positions
+  // Session continues unchanged (running stays running, holding stays holding)
+  // ================================================================
   const takeProfit = useCallback(async () => {
     const state = useSessionStore.getState();
     
@@ -400,20 +408,20 @@ export function useSessionActions() {
       return;
     }
     
-    // Set pending immediately to disable buttons
+    // CRITICAL: Set manual action flag FIRST to block ALL other operations
+    manualActionInProgressRef.current = true;
     dispatch({ type: 'SET_PENDING_ACTION', pendingAction: 'takeProfit' });
     
-    // Optimistic update - show positions closed (status stays the same)
+    // Optimistic update - positions cleared (status unchanged)
+    dispatch({ type: 'TAKE_PROFIT' });
     dispatch({ type: 'SYNC_POSITIONS', hasPositions: false, openCount: 0 });
-    dispatch({ type: 'TAKE_PROFIT' }); // Clears positions, status unchanged
     
     try {
-      // Close all positions via backend - returns immediately with stats
-      // CRITICAL: takeProfit flag makes backend close positions and return early
-      // NO new trades are opened on this tick
+      // Send takeProfit flag - backend closes all and returns immediately
+      // NO mode execution happens on this tick
       const result = await runTick({ takeProfit: true });
       
-      // Sync stats from result IMMEDIATELY - this is the authoritative data
+      // Sync stats from response - this is authoritative
       if (result?.stats) {
         dispatch({
           type: 'SYNC_PNL',
@@ -429,32 +437,37 @@ export function useSessionActions() {
         });
       }
       
-      // Force immediate query refresh for any other listeners
+      // Force immediate query refresh
       await queryClient.invalidateQueries({ queryKey: ['paper-stats'] });
       
       toast({ 
         title: 'Profit Taken', 
-        description: 'Positions closed. Trading continues.' 
+        description: `Positions closed. Trading continues.` 
       });
     } catch (error) {
       console.error('Take profit error:', error);
       toast({ title: 'Error', description: 'Failed to take profit', variant: 'destructive' });
     } finally {
-      // Clear pending action - buttons become active again
+      // CRITICAL: Clear manual action flag LAST
+      manualActionInProgressRef.current = false;
       dispatch({ type: 'SET_PENDING_ACTION', pendingAction: null });
     }
   }, [dispatch, runTick, queryClient]);
 
-  // CLOSE ALL - Emergency close and full stop (FAST, NO NEW TRADES EVER)
+  // ================================================================
+  // CLOSE ALL - INSTANT, ATOMIC close and full stop
+  // Session goes to idle, all intervals stopped
+  // ================================================================
   const closeAll = useCallback(async () => {
-    // IMMEDIATELY stop ALL intervals FIRST - this is critical
+    // CRITICAL: Set manual action flag and stop ALL intervals FIRST
+    manualActionInProgressRef.current = true;
     clearTickInterval();
     clearPnlRefresh();
     clearAutoTpCheck();
     
     dispatch({ type: 'SET_PENDING_ACTION', pendingAction: 'closeAll' });
     
-    // Optimistic update - immediately show positions closed and status idle
+    // Optimistic update - positions cleared, status idle
     dispatch({ type: 'CLOSE_ALL' });
     dispatch({ type: 'SYNC_POSITIONS', hasPositions: false, openCount: 0 });
     dispatch({ type: 'SYNC_STATUS', status: 'idle' });
@@ -463,7 +476,7 @@ export function useSessionActions() {
       const { data: { user } } = await supabase.auth.getUser();
       
       // CRITICAL: Update database to idle FIRST, BEFORE calling runTick
-      // This prevents any race condition where a tick sees 'running' status
+      // This prevents ANY race condition where a tick sees 'running' status
       if (user) {
         await supabase.from('paper_config').update({
           is_running: false,
@@ -472,11 +485,11 @@ export function useSessionActions() {
         } as any).eq('user_id', user.id);
       }
       
-      // Now call backend global close to actually close positions
-      // The backend returns early after closing - NO mode execution happens
+      // Now call backend to close positions
+      // Backend returns immediately after closing - NO mode execution
       const result = await runTick({ globalClose: true });
       
-      // Sync stats from result IMMEDIATELY - this is the authoritative data
+      // Sync stats from response - this is authoritative
       if (result?.stats) {
         dispatch({
           type: 'SYNC_PNL',
@@ -500,13 +513,15 @@ export function useSessionActions() {
       console.error('Close all error:', error);
       toast({ title: 'Error', description: 'Failed to close positions', variant: 'destructive' });
     } finally {
-      // Clear pending action - buttons become active again
+      // CRITICAL: Clear manual action flag LAST
+      manualActionInProgressRef.current = false;
       dispatch({ type: 'SET_PENDING_ACTION', pendingAction: null });
     }
   }, [dispatch, runTick, clearTickInterval, clearPnlRefresh, clearAutoTpCheck, queryClient]);
 
   // Reset session
   const resetSession = useCallback(() => {
+    manualActionInProgressRef.current = false;
     clearTickInterval();
     clearPnlRefresh();
     clearAutoTpCheck();
@@ -558,7 +573,6 @@ export function useSessionActions() {
           dispatch({ type: 'SET_HALTED', halted: config.trading_halted_for_day || false });
           
           // IMPORTANT: Do NOT auto-start. Always start in idle.
-          // Reset backend to idle since we're not auto-starting
           const backendStatus = (config as any).session_status;
           if (backendStatus === 'running' || backendStatus === 'holding') {
             await supabase.from('paper_config').update({
@@ -579,6 +593,7 @@ export function useSessionActions() {
 
     return () => {
       mounted = false;
+      manualActionInProgressRef.current = false;
       clearTickInterval();
       clearPnlRefresh();
       clearAutoTpCheck();
