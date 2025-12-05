@@ -471,10 +471,12 @@ serve(async (req) => {
       }).eq('user_id', userId);
     }
 
-    // Handle TAKE PROFIT - close all positions FAST but keep session running
+    // Handle TAKE PROFIT - close all positions FAST, keep session running, NO mode execution
+    // CRITICAL: This must return early - no new trades on same tick as TP
     if (takeProfit) {
       const { data: allPositions } = await supabase.from('paper_positions').select('*').eq('user_id', userId).eq('closed', false);
       const closedCount = (allPositions || []).length;
+      let closePnl = 0;
       
       if (closedCount > 0) {
         const tradeRecords = (allPositions || []).map(pos => {
@@ -482,6 +484,7 @@ serve(async (req) => {
           const exitPrice = tick ? (pos.side === 'long' ? tick.bid : tick.ask) : Number(pos.entry_price);
           const priceDiff = pos.side === 'long' ? exitPrice - Number(pos.entry_price) : Number(pos.entry_price) - exitPrice;
           const pnl = priceDiff * Number(pos.size);
+          closePnl += pnl;
           
           return {
             user_id: userId, symbol: pos.symbol, mode: pos.mode, side: pos.side,
@@ -491,29 +494,34 @@ serve(async (req) => {
           };
         });
         
-        // Batch close - but DO NOT change session status or is_running
+        // Batch close - DO NOT change session status (stays running/holding)
         await Promise.all([
           supabase.from('paper_trades').insert(tradeRecords),
           supabase.from('paper_positions').delete().eq('user_id', userId),
           supabase.from('system_logs').insert({
             user_id: userId, level: 'info', source: 'execution',
-            message: `TAKE PROFIT: ${closedCount} positions closed. Session continues.`,
+            message: `TAKE PROFIT: ${closedCount} positions closed. Session continues in ${sessionStatus} state.`,
           }),
         ]);
       }
       
-      // Return early - don't run modes on same tick as TP
-      const { data: stats } = await supabase.from('paper_stats_daily').select('*').eq('user_id', userId).eq('trade_date', today).maybeSingle();
+      // Calculate final P&L for immediate frontend refresh
+      const totalRealizedPnl = realizedPnl + closePnl;
+      const finalTradesToday = (todayTrades?.length || 0) + closedCount;
+      
+      // CRITICAL: Return early - NO mode execution happens after this
+      console.log(`[TAKE_PROFIT] Closed ${closedCount} positions, returning early. Session stays ${sessionStatus}.`);
       return new Response(JSON.stringify({ 
         success: true, 
         action: 'takeProfit',
         closedCount,
-        sessionStatus: sessionStatus,
+        sessionStatus: sessionStatus, // Keep current status unchanged
         stats: {
-          todayPnl: realizedPnl,
-          tradesToday: closedCount + (todayTrades?.length || 0),
+          todayPnl: totalRealizedPnl,
+          tradesToday: finalTradesToday,
           openPositionsCount: 0,
-          equity: startingEquity + realizedPnl,
+          equity: startingEquity + totalRealizedPnl,
+          winRate: finalTradesToday > 0 ? ((todayTrades || []).filter((t: any) => Number(t.realized_pnl) > 0).length + (closePnl > 0 ? closedCount : 0)) / finalTradesToday * 100 : 50,
         }
       }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
@@ -714,7 +722,8 @@ serve(async (req) => {
     const freshIsRunning = freshConfig?.is_running ?? false;
     
     // Determine if we should run modes (ONLY when status is explicitly 'running' AND is_running is true)
-    const shouldRunModes = freshSessionStatus === 'running' && freshIsRunning && !isHalted && !config.trading_halted_for_day && !globalClose && !takeBurstProfit;
+    // CRITICAL: Also check !takeProfit (defensive - should never reach here due to early return)
+    const shouldRunModes = freshSessionStatus === 'running' && freshIsRunning && !isHalted && !config.trading_halted_for_day && !globalClose && !takeBurstProfit && !takeProfit;
     
     console.log(`[ENGINE] sessionStatus=${freshSessionStatus}, is_running=${freshIsRunning}, shouldRunModes=${shouldRunModes}, enabledModes=${JSON.stringify(modeConfig.enabledModes)}`);
     
