@@ -22,7 +22,6 @@ export function ModesControlPanel() {
 
   const { status, mode, openCount, pendingAction } = useSessionStore();
   const { buttonStates, activate, holdToggle, takeProfit, closeAll, changeMode } = useSessionActions();
-  const { showSpinner } = buttonStates;
 
   // Only show controls for the 3 core modes
   const showBurstScalperControls = mode === 'burst' || mode === 'scalper';
@@ -47,7 +46,6 @@ export function ModesControlPanel() {
       <ControlBar
         status={status}
         openPositionsCount={openCount}
-        showSpinner={showSpinner}
         pendingAction={pendingAction}
         onActivate={activate}
         onTakeProfit={takeProfit}
@@ -219,7 +217,7 @@ export function ModesControlPanel() {
             </Select>
           </div>
           <div className="space-y-1.5">
-            <Label className="text-[10px] text-muted-foreground uppercase">Take Profit: {riskSettings.dailyProfitTarget}%</Label>
+            <Label className="text-[10px] text-muted-foreground uppercase">Auto TP: {riskSettings.dailyProfitTarget}%</Label>
             <Slider
               value={[riskSettings.dailyProfitTarget]}
               onValueChange={([v]) => updateRiskSettings({ dailyProfitTarget: v })}

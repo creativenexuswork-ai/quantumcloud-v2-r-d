@@ -55,27 +55,36 @@ export function getInitialSessionState(): SessionState {
 export function getButtonStates(session: SessionState): ButtonStates {
   const { status, hasPositions, pendingAction, halted, openCount } = session;
   
-  // Buttons are disabled during ANY pending action
-  const isBusy = pendingAction !== null;
+  // Spinner shows ONLY during the specific pending action (not blocking everything)
+  const showSpinner = pendingAction !== null;
+  
+  // Buttons are individually disabled based on state + whether THEY are pending
+  const isActivatePending = pendingAction === 'activate';
+  const isHoldPending = pendingAction === 'hold';
+  const isTakeProfitPending = pendingAction === 'takeProfit';
+  const isCloseAllPending = pendingAction === 'closeAll';
   
   return {
     // ACTIVATE: when idle, stopped, OR holding (acts as Resume from holding)
-    canActivate: (status === 'idle' || status === 'stopped' || status === 'holding') && !isBusy && !halted,
+    // Only disabled if THIS action is pending, or halted
+    canActivate: (status === 'idle' || status === 'stopped' || status === 'holding') && !isActivatePending && !halted,
     
-    // HOLD: only when running
-    canHold: status === 'running' && !isBusy,
+    // HOLD: only when running, only disabled if THIS action is pending
+    canHold: status === 'running' && !isHoldPending,
     
     // TAKE PROFIT: when running or holding AND has positions
-    canTakeProfit: (status === 'running' || status === 'holding') && !isBusy && (hasPositions || openCount > 0),
+    // Only disabled if THIS action is pending
+    canTakeProfit: (status === 'running' || status === 'holding') && !isTakeProfitPending && (hasPositions || openCount > 0),
     
     // CLOSE ALL: any active state (closes all, goes to idle)
-    canCloseAll: (status === 'running' || status === 'holding') && !isBusy,
+    // Only disabled if THIS action is pending
+    canCloseAll: (status === 'running' || status === 'holding') && !isCloseAllPending,
     
     // MODE CHANGE: only when idle or stopped
     canChangeMode: status === 'idle' || status === 'stopped',
     
     // Spinner shows ONLY during user-initiated actions
-    showSpinner: isBusy,
+    showSpinner,
   };
 }
 
