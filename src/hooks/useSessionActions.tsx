@@ -49,7 +49,7 @@ export function useSessionActions() {
   }, []);
 
   // Run a single tick - NO LONGER touches pendingAction (that's for user actions only)
-  const runTick = useCallback(async (options?: { globalClose?: boolean; takeBurstProfit?: boolean }) => {
+  const runTick = useCallback(async (options?: { globalClose?: boolean; takeBurstProfit?: boolean; takeProfit?: boolean }) => {
     if (tickInFlightRef.current) return null;
     
     // CRITICAL: Before running tick, check if session is still running
@@ -338,7 +338,7 @@ export function useSessionActions() {
     await queryClient.invalidateQueries({ queryKey: ['paper-stats'] });
   }, [queryClient]);
 
-  // TAKE PROFIT - Close all positions FAST, move to holding (no new trades until user clicks Activate)
+  // TAKE PROFIT - Close all positions INSTANTLY, stay running (auto-resume from flat)
   const takeProfit = useCallback(async () => {
     const state = useSessionStore.getState();
     
@@ -346,49 +346,34 @@ export function useSessionActions() {
       return;
     }
     
-    // IMMEDIATELY stop all tick intervals - prevent any new trades
-    clearTickInterval();
-    clearAutoTpCheck();
-    
     dispatch({ type: 'SET_PENDING_ACTION', pendingAction: 'takeProfit' });
     
-    // Optimistic update - show positions closed and status holding
+    // Optimistic update - show positions closed (status stays the same)
     dispatch({ type: 'SYNC_POSITIONS', hasPositions: false, openCount: 0 });
-    dispatch({ type: 'TAKE_PROFIT' }); // Sets status to 'holding'
+    dispatch({ type: 'TAKE_PROFIT' }); // Clears positions, status unchanged
     
     try {
       const { data: { user } } = await supabase.auth.getUser();
       
-      // Step 1: Update DB to holding state FIRST (prevents any ticks from opening trades)
-      if (user) {
-        await supabase.from('paper_config').update({
-          session_status: 'holding',
-          is_running: false, // Stop running so no new trades open
-        } as any).eq('user_id', user.id);
-      }
+      // Close all positions via backend using takeProfit option (does NOT change session state)
+      await runTick({ takeProfit: true });
       
-      // Step 2: Close all positions via backend (fast batched close)
-      await runTick({ globalClose: true });
-      
-      // Step 3: Log the event
+      // Log the event
       if (user) {
         await supabase.from('system_logs').insert({
           user_id: user.id,
           level: 'info',
           source: 'execution',
-          message: `TAKE PROFIT: Positions closed. Click ACTIVATE to resume trading.`,
+          message: `TAKE PROFIT: All positions closed. Session continues.`,
         });
       }
       
-      // Step 4: Sync to holding state
-      dispatch({ type: 'SYNC_STATUS', status: 'holding' });
-      
-      // Step 5: Force immediate refresh of stats
+      // Force immediate refresh of stats
       await refreshStats();
       
       toast({ 
         title: 'Profit Taken', 
-        description: 'Positions closed. Click ACTIVATE to resume.' 
+        description: 'Positions closed. Trading continues.' 
       });
     } catch (error) {
       console.error('Take profit error:', error);
@@ -396,7 +381,7 @@ export function useSessionActions() {
     } finally {
       dispatch({ type: 'SET_PENDING_ACTION', pendingAction: null });
     }
-  }, [dispatch, runTick, queryClient, clearTickInterval, clearAutoTpCheck, refreshStats]);
+  }, [dispatch, runTick, refreshStats]);
 
   // CLOSE ALL - Emergency close and full stop (FAST, NO NEW TRADES EVER)
   const closeAll = useCallback(async () => {

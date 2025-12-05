@@ -110,12 +110,13 @@ export function transitionSession(state: SessionState, action: SessionAction): S
       return state;
     
     case 'TAKE_PROFIT':
-      // Close all positions, go to holding (not idle)
+      // Close all positions, stay running (auto-resume from flat state)
+      // User must explicitly press HOLD to pause - TP just banks profits
       return { 
         ...state, 
-        status: 'holding', 
         hasPositions: false, 
         openCount: 0 
+        // status stays the same - 'running' continues running
       };
     
     case 'CLOSE_ALL':
