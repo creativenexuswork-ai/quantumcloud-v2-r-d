@@ -239,8 +239,8 @@ function evaluatePosition(
 // ============== Trading Mode Logic ==============
 
 function runBurstMode(ctx: EngineContext): ProposedOrder[] {
-  if (!ctx.burstRequested) return [];
-  
+  // Burst mode runs if explicitly requested OR if burst is in the enabled modes list
+  // This allows burst to work both via burst_requested flag AND via mode selection
   const config = MODE_MANAGEMENT_CONFIG.burst;
   const currentBurstPositions = ctx.openPositions.filter(p => p.mode === 'burst').length;
   
@@ -1104,6 +1104,8 @@ serve(async (req) => {
         const burstLocked = burstPnlPercent >= burstConfig.dailyProfitTargetPercent;
 
         const modesToRun = new Set<TradingMode>(modeConfig.enabledModes as TradingMode[] || []);
+        
+        // Also add burst if explicitly requested (for backward compatibility)
         if (config.burst_requested && !burstLocked) {
           modesToRun.add('burst');
         }

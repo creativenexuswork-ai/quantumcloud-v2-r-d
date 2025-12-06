@@ -541,12 +541,19 @@ export function useSessionActions() {
     const { data: { user } } = await supabase.auth.getUser();
     if (user) {
       const backendMode = MODE_TO_BACKEND[newMode];
+      const isBurstMode = newMode === 'burst';
+      
       await supabase.from('paper_config').update({
         mode_config: {
           enabledModes: [backendMode],
           modeSettings: {},
         },
+        // CRITICAL: Set burst_requested flag when burst mode is selected
+        // This flag is required by the backend for burst mode to open trades
+        burst_requested: isBurstMode,
       } as any).eq('user_id', user.id);
+      
+      console.log(`[MODE] Changed to ${newMode}, burst_requested=${isBurstMode}`);
     }
     
     toast({ title: 'Mode Changed', description: `Switched to ${newMode.toUpperCase()} mode` });
