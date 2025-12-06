@@ -6,7 +6,7 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-// Default configs
+// Default configs - use user risk settings, no arbitrary caps
 const DEFAULT_RISK_CONFIG = {
   maxDailyLossPercent: 5,
   maxConcurrentRiskPercent: 10,
@@ -15,7 +15,7 @@ const DEFAULT_RISK_CONFIG = {
 };
 
 const DEFAULT_BURST_CONFIG = {
-  size: 5, // Reduced from 20 to 5 for controlled burst execution
+  size: 10,
   dailyProfitTargetPercent: 8,
   riskPerBurstPercent: 2,
 };
@@ -30,10 +30,10 @@ const DEFAULT_MARKET_CONFIG = {
   typeFilters: { crypto: true, forex: true, index: true, metal: true },
 };
 
-// ============== Trading Mode Logic (inline for edge function) ==============
+// ============== Types ==============
 
 type Side = 'long' | 'short';
-type TradingMode = 'sniper' | 'burst' | 'trend' | 'swing' | 'memory' | 'stealth' | 'news' | 'hybrid';
+type TradingMode = 'sniper' | 'burst' | 'trend' | 'swing' | 'memory' | 'stealth' | 'news' | 'hybrid' | 'scalper';
 type SessionStatus = 'idle' | 'running' | 'holding' | 'stopped';
 
 interface PriceTick {
@@ -59,6 +59,20 @@ interface ProposedOrder {
   batchId?: string;
 }
 
+interface Position {
+  id: string;
+  symbol: string;
+  mode: string;
+  side: string;
+  size: number;
+  entry_price: number;
+  sl?: number;
+  tp?: number;
+  unrealized_pnl?: number;
+  opened_at: string;
+  batch_id?: string;
+}
+
 interface EngineContext {
   selectedSymbols: string[];
   ticks: Record<string, PriceTick>;
@@ -68,14 +82,82 @@ interface EngineContext {
   modeSettings: Record<string, any>;
   burstConfig: any;
   burstRequested: boolean;
+  openPositions: Position[];
+  riskConfig: any;
 }
 
+// ============== Position Management Thresholds (per mode) ==============
+
+interface ModeManagementConfig {
+  maxConcurrent: number;
+  perTickOpen: number;
+  perPositionTpPercent: number;
+  perPositionSlPercent: number;
+  maxAgeMinutes: number;
+  cutLoserThreshold?: number;
+  trailingActivation?: number;
+  trailingDistance?: number;
+}
+
+const MODE_MANAGEMENT_CONFIG: Record<string, ModeManagementConfig> = {
+  burst: {
+    maxConcurrent: 15,
+    perTickOpen: 3,
+    perPositionTpPercent: 0.8,
+    perPositionSlPercent: 0.4,
+    maxAgeMinutes: 10,
+    cutLoserThreshold: -0.3,
+  },
+  scalper: {
+    maxConcurrent: 8,
+    perTickOpen: 2,
+    perPositionTpPercent: 0.5,
+    perPositionSlPercent: 0.25,
+    maxAgeMinutes: 5,
+    cutLoserThreshold: -0.2,
+  },
+  trend: {
+    maxConcurrent: 5,
+    perTickOpen: 1,
+    perPositionTpPercent: 2.0,
+    perPositionSlPercent: 1.0,
+    maxAgeMinutes: 60,
+    trailingActivation: 0.8,
+    trailingDistance: 0.4,
+  },
+  sniper: {
+    maxConcurrent: 3,
+    perTickOpen: 1,
+    perPositionTpPercent: 3.0,
+    perPositionSlPercent: 1.5,
+    maxAgeMinutes: 30,
+  },
+  swing: {
+    maxConcurrent: 4,
+    perTickOpen: 1,
+    perPositionTpPercent: 5.0,
+    perPositionSlPercent: 2.5,
+    maxAgeMinutes: 120,
+  },
+};
+
+// ============== Helper Functions ==============
+
 function detectTrend(tick: PriceTick): 'up' | 'down' | 'neutral' {
-  if (tick.regime === 'low_vol') {
-    return 'neutral';
-  }
+  if (tick.regime === 'low_vol') return 'neutral';
   const vol = tick.volatility ?? 0.5;
-  return vol > 0.5 ? 'up' : 'down';
+  // Use volatility combined with randomness for realistic signal variation
+  const bias = (Math.random() - 0.5) * 0.4;
+  return (vol + bias) > 0.5 ? 'up' : 'down';
+}
+
+function calculateSignalStrength(tick: PriceTick): number {
+  // Signal strength based on volatility and regime
+  let strength = 0.5;
+  if (tick.regime === 'trend') strength += 0.2;
+  if (tick.regime === 'high_vol') strength += 0.1;
+  if (tick.volatility && tick.volatility > 0.6) strength += 0.1;
+  return Math.min(1, strength + (Math.random() * 0.2 - 0.1));
 }
 
 function calculateSize(equity: number, riskPercent: number, price: number, slDistance: number): number {
@@ -88,24 +170,258 @@ function generateBatchId(): string {
   return `burst_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 }
 
-function runSniperMode(ctx: EngineContext): ProposedOrder[] {
-  const orders: ProposedOrder[] = [];
-  const riskPct = ctx.modeSettings?.sniper?.riskPerTrade ?? 0.5;
+function getPositionAgeMinutes(openedAt: string): number {
+  const openTime = new Date(openedAt).getTime();
+  const now = Date.now();
+  return (now - openTime) / (1000 * 60);
+}
+
+function getUnrealizedPnlPercent(position: Position, currentPrice: number): number {
+  const entryPrice = Number(position.entry_price);
+  if (entryPrice === 0) return 0;
+  const priceDiff = position.side === 'long' 
+    ? currentPrice - entryPrice 
+    : entryPrice - currentPrice;
+  return (priceDiff / entryPrice) * 100;
+}
+
+// ============== Position Management Logic ==============
+
+interface ManagementDecision {
+  action: 'hold' | 'close';
+  reason?: string;
+  exitPrice?: number;
+}
+
+function evaluatePosition(
+  position: Position,
+  tick: PriceTick,
+  modeConfig: ModeManagementConfig
+): ManagementDecision {
+  const currentPrice = position.side === 'long' ? tick.bid : tick.ask;
+  const pnlPercent = getUnrealizedPnlPercent(position, currentPrice);
+  const ageMinutes = getPositionAgeMinutes(position.opened_at);
   
-  // Only trade on strong signals - check if we should trade this tick
-  const shouldTrade = Math.random() < 0.3; // 30% chance per tick
-  if (!shouldTrade) return [];
+  // 1. Check per-position take profit
+  if (modeConfig.perPositionTpPercent && pnlPercent >= modeConfig.perPositionTpPercent) {
+    return { action: 'close', reason: 'position_tp', exitPrice: currentPrice };
+  }
+  
+  // 2. Check per-position stop loss (tighter than original SL)
+  if (modeConfig.perPositionSlPercent && pnlPercent <= -modeConfig.perPositionSlPercent) {
+    return { action: 'close', reason: 'position_sl', exitPrice: currentPrice };
+  }
+  
+  // 3. Cut clear losers early
+  if (modeConfig.cutLoserThreshold && pnlPercent <= modeConfig.cutLoserThreshold) {
+    return { action: 'close', reason: 'cut_loser', exitPrice: currentPrice };
+  }
+  
+  // 4. Check age limit - close stale positions
+  if (modeConfig.maxAgeMinutes && ageMinutes > modeConfig.maxAgeMinutes) {
+    return { action: 'close', reason: 'age_limit', exitPrice: currentPrice };
+  }
+  
+  // 5. Trailing stop for trend mode
+  if (modeConfig.trailingActivation && modeConfig.trailingDistance) {
+    if (pnlPercent >= modeConfig.trailingActivation) {
+      // Position has reached trailing activation - check if price dropped below trail
+      const trailLevel = modeConfig.trailingActivation - modeConfig.trailingDistance;
+      if (pnlPercent < trailLevel) {
+        return { action: 'close', reason: 'trailing_stop', exitPrice: currentPrice };
+      }
+    }
+  }
+  
+  return { action: 'hold' };
+}
+
+// ============== Trading Mode Logic ==============
+
+function runBurstMode(ctx: EngineContext): ProposedOrder[] {
+  if (!ctx.burstRequested) return [];
+  
+  const config = MODE_MANAGEMENT_CONFIG.burst;
+  const currentBurstPositions = ctx.openPositions.filter(p => p.mode === 'burst').length;
+  
+  // Don't exceed max concurrent for burst
+  if (currentBurstPositions >= config.maxConcurrent) return [];
+  
+  // Signal-based entry - only enter on strong signals
+  const signalThreshold = 0.55;
+  const orders: ProposedOrder[] = [];
+  const availableSlots = Math.min(config.perTickOpen, config.maxConcurrent - currentBurstPositions);
+  
+  if (availableSlots <= 0) return [];
+  
+  // Find best opportunities
+  const opportunities: { symbol: string; tick: PriceTick; strength: number }[] = [];
   
   for (const symbol of ctx.selectedSymbols) {
     const tick = ctx.ticks[symbol];
     if (!tick) continue;
-    if (tick.regime === 'low_vol') continue;
+    
+    const strength = calculateSignalStrength(tick);
+    if (strength >= signalThreshold) {
+      opportunities.push({ symbol, tick, strength });
+    }
+  }
+  
+  // Sort by signal strength
+  opportunities.sort((a, b) => b.strength - a.strength);
+  
+  const riskPerTrade = (ctx.burstConfig?.riskPerBurstPercent ?? 2) / config.maxConcurrent;
+  const batchId = generateBatchId();
+  
+  for (let i = 0; i < Math.min(availableSlots, opportunities.length); i++) {
+    const { symbol, tick } = opportunities[i];
+    const trend = detectTrend(tick);
+    const side: Side = trend === 'down' ? 'short' : 'long';
+    
+    const slDistance = tick.mid * 0.004; // Tight SL for burst
+    const tpDistance = tick.mid * 0.008;
+    const size = calculateSize(ctx.equity, riskPerTrade, tick.mid, slDistance);
+    
+    orders.push({
+      symbol, side, size,
+      entryPrice: tick.mid,
+      sl: side === 'long' ? tick.mid - slDistance : tick.mid + slDistance,
+      tp: side === 'long' ? tick.mid + tpDistance : tick.mid - tpDistance,
+      mode: 'burst',
+      reason: `Burst entry (signal: ${opportunities[i].strength.toFixed(2)})`,
+      confidence: opportunities[i].strength,
+      batchId
+    });
+  }
+  
+  return orders;
+}
+
+function runScalperMode(ctx: EngineContext): ProposedOrder[] {
+  const config = MODE_MANAGEMENT_CONFIG.scalper;
+  const currentPositions = ctx.openPositions.filter(p => p.mode === 'scalper').length;
+  
+  if (currentPositions >= config.maxConcurrent) return [];
+  
+  // Scalper needs strong signal alignment
+  const signalThreshold = 0.6;
+  const orders: ProposedOrder[] = [];
+  const availableSlots = Math.min(config.perTickOpen, config.maxConcurrent - currentPositions);
+  
+  // Only trade on ~40% of ticks - be selective
+  if (Math.random() > 0.4) return [];
+  
+  for (const symbol of ctx.selectedSymbols) {
+    if (orders.length >= availableSlots) break;
+    
+    const tick = ctx.ticks[symbol];
+    if (!tick) continue;
+    if (tick.regime === 'low_vol') continue; // Need volatility for scalping
+    
+    const strength = calculateSignalStrength(tick);
+    if (strength < signalThreshold) continue;
     
     const trend = detectTrend(tick);
-    // Sniper requires clear direction, skip neutral
     if (trend === 'neutral') continue;
     
     const side: Side = trend === 'up' ? 'long' : 'short';
+    const riskPct = ctx.modeSettings?.scalper?.riskPerTrade ?? 0.3;
+    const slDistance = tick.mid * 0.003; // Very tight SL
+    const tpDistance = tick.mid * 0.005;
+    const size = calculateSize(ctx.equity, riskPct, tick.mid, slDistance);
+    
+    orders.push({
+      symbol, side, size,
+      entryPrice: tick.mid,
+      sl: side === 'long' ? tick.mid - slDistance : tick.mid + slDistance,
+      tp: side === 'long' ? tick.mid + tpDistance : tick.mid - tpDistance,
+      mode: 'scalper',
+      reason: `Scalper entry on ${tick.regime}`,
+      confidence: strength
+    });
+  }
+  
+  return orders;
+}
+
+function runTrendMode(ctx: EngineContext): ProposedOrder[] {
+  const config = MODE_MANAGEMENT_CONFIG.trend;
+  const currentPositions = ctx.openPositions.filter(p => p.mode === 'trend').length;
+  
+  if (currentPositions >= config.maxConcurrent) return [];
+  
+  // Trend mode is patient - only trade on ~25% of ticks
+  if (Math.random() > 0.25) return [];
+  
+  // Need strong trend confirmation
+  const signalThreshold = 0.65;
+  const orders: ProposedOrder[] = [];
+  const availableSlots = Math.min(config.perTickOpen, config.maxConcurrent - currentPositions);
+  
+  for (const symbol of ctx.selectedSymbols) {
+    if (orders.length >= availableSlots) break;
+    
+    const tick = ctx.ticks[symbol];
+    if (!tick) continue;
+    if (tick.regime === 'low_vol') continue; // Need trend regime
+    
+    const strength = calculateSignalStrength(tick);
+    if (strength < signalThreshold) continue;
+    
+    // Trend mode specifically requires trend regime
+    if (tick.regime !== 'trend' && Math.random() > 0.3) continue;
+    
+    const trend = detectTrend(tick);
+    if (trend === 'neutral') continue;
+    
+    const side: Side = trend === 'up' ? 'long' : 'short';
+    const riskPct = ctx.modeSettings?.trend?.riskPerTrade ?? 1.0;
+    const slDistance = tick.mid * 0.01; // Wider SL for trends
+    const tpDistance = tick.mid * 0.02;
+    const size = calculateSize(ctx.equity, riskPct, tick.mid, slDistance);
+    
+    orders.push({
+      symbol, side, size,
+      entryPrice: tick.mid,
+      sl: side === 'long' ? tick.mid - slDistance : tick.mid + slDistance,
+      tp: side === 'long' ? tick.mid + tpDistance : tick.mid - tpDistance,
+      mode: 'trend',
+      reason: `Trend entry on ${tick.regime} (strength: ${strength.toFixed(2)})`,
+      confidence: strength
+    });
+  }
+  
+  return orders;
+}
+
+function runSniperMode(ctx: EngineContext): ProposedOrder[] {
+  const config = MODE_MANAGEMENT_CONFIG.sniper;
+  const currentPositions = ctx.openPositions.filter(p => p.mode === 'sniper').length;
+  
+  if (currentPositions >= config.maxConcurrent) return [];
+  
+  // Sniper is very selective - only trade on ~20% of ticks
+  if (Math.random() > 0.2) return [];
+  
+  // High confidence required
+  const signalThreshold = 0.7;
+  const orders: ProposedOrder[] = [];
+  
+  for (const symbol of ctx.selectedSymbols) {
+    if (orders.length >= config.perTickOpen) break;
+    
+    const tick = ctx.ticks[symbol];
+    if (!tick) continue;
+    if (tick.regime === 'low_vol') continue;
+    
+    const strength = calculateSignalStrength(tick);
+    if (strength < signalThreshold) continue;
+    
+    const trend = detectTrend(tick);
+    if (trend === 'neutral') continue;
+    
+    const side: Side = trend === 'up' ? 'long' : 'short';
+    const riskPct = ctx.modeSettings?.sniper?.riskPerTrade ?? 0.5;
     const slDistance = tick.mid * 0.015;
     const tpDistance = tick.mid * 0.03;
     const size = calculateSize(ctx.equity, riskPct, tick.mid, slDistance);
@@ -116,104 +432,29 @@ function runSniperMode(ctx: EngineContext): ProposedOrder[] {
       sl: side === 'long' ? tick.mid - slDistance : tick.mid + slDistance,
       tp: side === 'long' ? tick.mid + tpDistance : tick.mid - tpDistance,
       mode: 'sniper',
-      reason: `Sniper entry on ${tick.regime} regime`,
-      confidence: 0.75
-    });
-  }
-  
-  return orders.slice(0, 1); // Max 1 sniper trade per tick
-}
-
-function runBurstMode(ctx: EngineContext): ProposedOrder[] {
-  if (!ctx.burstRequested) return [];
-  
-  const orders: ProposedOrder[] = [];
-  // Use configured burst size, capped at 5 for controlled execution
-  const burstSize = Math.min(ctx.burstConfig?.size ?? 5, 5);
-  const totalRisk = ctx.burstConfig?.riskPerBurstPercent ?? 2;
-  const riskPerTrade = totalRisk / burstSize;
-  
-  let bestSymbol: string | null = null;
-  let bestScore = 0;
-  
-  for (const symbol of ctx.selectedSymbols) {
-    const tick = ctx.ticks[symbol];
-    if (!tick) continue;
-    const score = (tick.volatility ?? 0.5) * (tick.regime === 'trend' ? 1.5 : tick.regime === 'high_vol' ? 1.3 : 1);
-    if (score > bestScore) { bestScore = score; bestSymbol = symbol; }
-  }
-  
-  if (!bestSymbol && ctx.selectedSymbols.length > 0) {
-    bestSymbol = ctx.selectedSymbols[0];
-  }
-  
-  if (!bestSymbol) return [];
-  
-  const tick = ctx.ticks[bestSymbol];
-  if (!tick) return [];
-  
-  const trend = detectTrend(tick);
-  const side: Side = trend === 'down' ? 'short' : 'long';
-  const batchId = generateBatchId();
-  
-  for (let i = 0; i < burstSize; i++) {
-    const slDistance = tick.mid * 0.005;
-    const tpDistance = tick.mid * 0.01;
-    const size = calculateSize(ctx.equity, riskPerTrade, tick.mid, slDistance);
-    const priceOffset = (Math.random() - 0.5) * tick.mid * 0.0002;
-    
-    orders.push({
-      symbol: bestSymbol, side, size,
-      entryPrice: tick.mid + priceOffset,
-      sl: side === 'long' ? tick.mid - slDistance : tick.mid + slDistance,
-      tp: side === 'long' ? tick.mid + tpDistance : tick.mid - tpDistance,
-      mode: 'burst',
-      reason: `Burst trade ${i + 1}/${burstSize}`,
-      confidence: 0.6,
-      batchId
+      reason: `Sniper entry on ${tick.regime}`,
+      confidence: strength
     });
   }
   
   return orders;
 }
 
-function runTrendMode(ctx: EngineContext): ProposedOrder[] {
-  const orders: ProposedOrder[] = [];
-  const riskPct = ctx.modeSettings?.trend?.riskPerTrade ?? 1;
-  
-  // Only trade on 40% of ticks - be selective
-  const shouldTrade = Math.random() < 0.4;
-  if (!shouldTrade) return [];
-  
-  for (const symbol of ctx.selectedSymbols) {
-    const tick = ctx.ticks[symbol];
-    if (!tick) continue;
-    if (tick.regime === 'low_vol') continue;
-    
-    const trend = detectTrend(tick);
-    // Trend mode requires clear direction
-    if (trend === 'neutral') continue;
-    
-    const side: Side = trend === 'up' ? 'long' : 'short';
-    const slDistance = tick.mid * 0.01;
-    const tpDistance = tick.mid * 0.02;
-    const size = calculateSize(ctx.equity, riskPct, tick.mid, slDistance);
-    
-    orders.push({
-      symbol, side, size, entryPrice: tick.mid,
-      sl: side === 'long' ? tick.mid - slDistance : tick.mid + slDistance,
-      tp: side === 'long' ? tick.mid + tpDistance : tick.mid - tpDistance,
-      mode: 'trend', reason: `Trend entry on ${tick.regime}`, confidence: 0.7
-    });
-  }
-  return orders.slice(0, 2); // Max 2 trend trades per tick
-}
-
 function runSwingMode(ctx: EngineContext): ProposedOrder[] {
+  const config = MODE_MANAGEMENT_CONFIG.swing;
+  const currentPositions = ctx.openPositions.filter(p => p.mode === 'swing').length;
+  
+  if (currentPositions >= config.maxConcurrent) return [];
+  
+  // Swing is very patient - only trade on ~15% of ticks
+  if (Math.random() > 0.15) return [];
+  
   const orders: ProposedOrder[] = [];
   const riskPct = ctx.modeSettings?.swing?.riskPerTrade ?? 2;
   
   for (const symbol of ctx.selectedSymbols) {
+    if (orders.length >= config.perTickOpen) break;
+    
     const tick = ctx.ticks[symbol];
     if (!tick || tick.regime === 'high_vol') continue;
     
@@ -232,17 +473,21 @@ function runSwingMode(ctx: EngineContext): ProposedOrder[] {
       mode: 'swing', reason: `Swing on ${trend} bias`, confidence: 0.65
     });
   }
-  return orders.slice(0, 2);
+  return orders;
 }
 
 function runMemoryMode(ctx: EngineContext): ProposedOrder[] {
+  // Only trade on ~30% of ticks
+  if (Math.random() > 0.3) return [];
+  
   const orders: ProposedOrder[] = [];
   const riskMultiplier = ctx.winRate > 60 ? 1.2 : ctx.winRate < 40 ? 0.5 : 1;
   const riskPct = 1 * riskMultiplier;
-  
   const successfulSymbols = new Set(ctx.recentTrades.filter(t => t.realized_pnl > 0).map(t => t.symbol));
   
   for (const symbol of ctx.selectedSymbols) {
+    if (orders.length >= 2) break;
+    
     const tick = ctx.ticks[symbol];
     if (!tick) continue;
     
@@ -262,7 +507,7 @@ function runMemoryMode(ctx: EngineContext): ProposedOrder[] {
       mode: 'memory', reason: `Adaptive (win rate: ${ctx.winRate.toFixed(0)}%)`, confidence: 0.6 + symbolBonus
     });
   }
-  return orders.slice(0, 3);
+  return orders;
 }
 
 function runStealthMode(ctx: EngineContext): ProposedOrder[] {
@@ -272,7 +517,7 @@ function runStealthMode(ctx: EngineContext): ProposedOrder[] {
   const riskPct = ctx.modeSettings?.stealth?.riskPerTrade ?? 0.5;
   const symbols = [...ctx.selectedSymbols].sort(() => Math.random() - 0.5);
   
-  for (const symbol of symbols.slice(0, 2)) {
+  for (const symbol of symbols.slice(0, 1)) {
     const tick = ctx.ticks[symbol];
     if (!tick) continue;
     
@@ -293,14 +538,19 @@ function runStealthMode(ctx: EngineContext): ProposedOrder[] {
       mode: 'stealth', reason: 'Stealth entry', confidence: 0.55
     });
   }
-  return orders.slice(0, 1);
+  return orders;
 }
 
 function runNewsMode(ctx: EngineContext): ProposedOrder[] {
+  // Only trade on ~25% of ticks
+  if (Math.random() > 0.25) return [];
+  
   const orders: ProposedOrder[] = [];
   const riskPct = ctx.modeSettings?.news?.riskPerTrade ?? 0.5;
   
   for (const symbol of ctx.selectedSymbols) {
+    if (orders.length >= 1) break;
+    
     const tick = ctx.ticks[symbol];
     if (!tick || tick.regime === 'high_vol') continue;
     if (tick.volatility && tick.volatility > 0.6) continue;
@@ -320,7 +570,7 @@ function runNewsMode(ctx: EngineContext): ProposedOrder[] {
       mode: 'news', reason: 'Low news-risk environment', confidence: 0.7
     });
   }
-  return orders.slice(0, 2);
+  return orders;
 }
 
 function runHybridMode(ctx: EngineContext): ProposedOrder[] {
@@ -332,12 +582,19 @@ function runHybridMode(ctx: EngineContext): ProposedOrder[] {
   for (const order of [...swingOrders, ...trendOrders, ...sniperOrders]) {
     ordersBySymbol.set(order.symbol, { ...order, mode: 'hybrid', reason: `Hybrid: ${order.reason}` });
   }
-  return Array.from(ordersBySymbol.values()).slice(0, 3);
+  return Array.from(ordersBySymbol.values()).slice(0, 2);
 }
 
 const MODE_RUNNERS: Record<TradingMode, (ctx: EngineContext) => ProposedOrder[]> = {
-  sniper: runSniperMode, burst: runBurstMode, trend: runTrendMode, swing: runSwingMode,
-  memory: runMemoryMode, stealth: runStealthMode, news: runNewsMode, hybrid: runHybridMode,
+  sniper: runSniperMode, 
+  burst: runBurstMode, 
+  trend: runTrendMode, 
+  swing: runSwingMode,
+  memory: runMemoryMode, 
+  stealth: runStealthMode, 
+  news: runNewsMode, 
+  hybrid: runHybridMode,
+  scalper: runScalperMode,
 };
 
 // ============== Main Handler ==============
@@ -351,10 +608,7 @@ serve(async (req) => {
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
     const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
     const supabase = createClient(supabaseUrl, supabaseKey, {
-      auth: {
-        autoRefreshToken: false,
-        persistSession: false,
-      },
+      auth: { autoRefreshToken: false, persistSession: false },
     });
 
     const authHeader = req.headers.get('Authorization')?.replace('Bearer ', '');
@@ -377,34 +631,25 @@ serve(async (req) => {
 
     // ================================================================
     // CRITICAL: MANUAL ACTION GUARD - Check FIRST, return EARLY
-    // If this is a manual action (takeProfit or globalClose), we:
-    // 1. Close all positions
-    // 2. Return immediately
-    // 3. NEVER run mode logic
     // ================================================================
     const isManualAction = takeProfit === true || globalClose === true;
-    
     if (isManualAction) {
       console.log(`[MANUAL_ACTION] Detected: takeProfit=${takeProfit}, globalClose=${globalClose}`);
     }
 
-    // Fetch latest prices (needed for closing positions at current price)
+    // Fetch latest prices
     const priceResponse = await fetch(`${supabaseUrl}/functions/v1/price-feed`, {
       headers: { Authorization: `Bearer ${supabaseKey}` },
     });
     const { ticks } = await priceResponse.json();
-
-    // Get today's date for trade records
     const today = new Date().toISOString().split('T')[0];
 
     // ================================================================
     // TAKE PROFIT HANDLER - Atomic close, returns IMMEDIATELY
-    // HARD DELETE all positions - no leftovers
     // ================================================================
     if (takeProfit === true) {
       console.log(`[TAKE_PROFIT] ATOMIC CLOSE starting for user ${userId}`);
       
-      // HARD FETCH all positions for this user (no closed filter - get everything)
       const { data: allPositions } = await supabase
         .from('paper_positions')
         .select('*')
@@ -413,7 +658,6 @@ serve(async (req) => {
       const closedCount = (allPositions || []).length;
       let closePnl = 0;
       
-      // Fetch existing trades for stats
       const { data: existingTrades } = await supabase
         .from('paper_trades')
         .select('*')
@@ -422,7 +666,6 @@ serve(async (req) => {
       
       const existingRealizedPnl = (existingTrades || []).reduce((sum: number, t: any) => sum + Number(t.realized_pnl), 0);
       
-      // Get starting equity
       const { data: dailyStats } = await supabase
         .from('paper_stats_daily')
         .select('equity_start')
@@ -439,7 +682,6 @@ serve(async (req) => {
       
       const startingEquity = dailyStats?.equity_start ?? account?.equity ?? 10000;
       
-      // Get current session status to preserve it
       const { data: config } = await supabase
         .from('paper_config')
         .select('session_status')
@@ -449,7 +691,6 @@ serve(async (req) => {
       const currentSessionStatus = config?.session_status || 'running';
       
       if (closedCount > 0) {
-        // Build trade records for each position
         const tradeRecords = (allPositions || []).map(pos => {
           const tick = ticks[pos.symbol];
           const exitPrice = tick ? (pos.side === 'long' ? tick.bid : tick.ask) : Number(pos.entry_price);
@@ -465,34 +706,24 @@ serve(async (req) => {
           };
         });
         
-        // CRITICAL: HARD DELETE all positions for user - no filter by closed
         await Promise.all([
           supabase.from('paper_trades').insert(tradeRecords),
           supabase.from('paper_positions').delete().eq('user_id', userId),
           supabase.from('system_logs').insert({
             user_id: userId, level: 'info', source: 'execution',
-            message: `TAKE PROFIT: ${closedCount} positions closed (hard delete). Session continues (${currentSessionStatus}).`,
+            message: `TAKE PROFIT: ${closedCount} positions closed. P&L: $${closePnl.toFixed(2)}`,
           }),
         ]);
-      } else {
-        await supabase.from('system_logs').insert({
-          user_id: userId, level: 'info', source: 'execution',
-          message: `TAKE PROFIT: No positions found.`,
-        });
       }
       
-      // Calculate final stats
       const totalRealizedPnl = existingRealizedPnl + closePnl;
       const finalTradesToday = (existingTrades?.length || 0) + closedCount;
       const wins = (existingTrades || []).filter((t: any) => Number(t.realized_pnl) > 0).length + (closePnl > 0 ? 1 : 0);
       
-      console.log(`[TAKE_PROFIT] COMPLETE: closed=${closedCount}, pnl=${closePnl.toFixed(2)}, status=${currentSessionStatus}`);
+      console.log(`[TAKE_PROFIT] COMPLETE: closed=${closedCount}, pnl=${closePnl.toFixed(2)}`);
       
-      // CRITICAL: Return IMMEDIATELY - absolutely NO mode execution after this
       return new Response(JSON.stringify({ 
-        success: true, 
-        action: 'takeProfit',
-        closedCount,
+        success: true, action: 'takeProfit', closedCount,
         sessionStatus: currentSessionStatus,
         stats: {
           todayPnl: totalRealizedPnl,
@@ -508,12 +739,10 @@ serve(async (req) => {
 
     // ================================================================
     // GLOBAL CLOSE HANDLER - Atomic close + STOP, returns IMMEDIATELY
-    // HARD DELETE all positions - no leftovers
     // ================================================================
     if (globalClose === true) {
       console.log(`[GLOBAL_CLOSE] ATOMIC CLOSE + STOP starting for user ${userId}`);
       
-      // HARD FETCH all positions for this user (no closed filter - get everything)
       const { data: allPositions } = await supabase
         .from('paper_positions')
         .select('*')
@@ -522,7 +751,6 @@ serve(async (req) => {
       const closedCount = (allPositions || []).length;
       let closePnl = 0;
       
-      // Fetch existing trades for stats
       const { data: existingTrades } = await supabase
         .from('paper_trades')
         .select('*')
@@ -531,7 +759,6 @@ serve(async (req) => {
       
       const existingRealizedPnl = (existingTrades || []).reduce((sum: number, t: any) => sum + Number(t.realized_pnl), 0);
       
-      // Get starting equity
       const { data: dailyStats } = await supabase
         .from('paper_stats_daily')
         .select('equity_start')
@@ -549,7 +776,6 @@ serve(async (req) => {
       const startingEquity = dailyStats?.equity_start ?? account?.equity ?? 10000;
       
       if (closedCount > 0) {
-        // Build trade records for each position
         const tradeRecords = (allPositions || []).map(pos => {
           const tick = ticks[pos.symbol];
           const exitPrice = tick ? (pos.side === 'long' ? tick.bid : tick.ask) : Number(pos.entry_price);
@@ -565,27 +791,21 @@ serve(async (req) => {
           };
         });
         
-        // CRITICAL: HARD DELETE all positions + set session idle
         await Promise.all([
           supabase.from('paper_trades').insert(tradeRecords),
           supabase.from('paper_positions').delete().eq('user_id', userId),
           supabase.from('paper_config').update({ 
-            session_status: 'idle',
-            is_running: false,
-            burst_requested: false
+            session_status: 'idle', is_running: false, burst_requested: false
           }).eq('user_id', userId),
           supabase.from('system_logs').insert({
             user_id: userId, level: 'info', source: 'execution',
-            message: `CLOSE ALL: ${closedCount} positions closed (hard delete). Session stopped.`,
+            message: `CLOSE ALL: ${closedCount} positions closed. Session stopped.`,
           }),
         ]);
       } else {
-        // No positions found, just update config to idle
         await Promise.all([
           supabase.from('paper_config').update({ 
-            session_status: 'idle',
-            is_running: false,
-            burst_requested: false
+            session_status: 'idle', is_running: false, burst_requested: false
           }).eq('user_id', userId),
           supabase.from('system_logs').insert({
             user_id: userId, level: 'info', source: 'execution',
@@ -594,17 +814,13 @@ serve(async (req) => {
         ]);
       }
       
-      // Calculate final stats
       const totalRealizedPnl = existingRealizedPnl + closePnl;
       const finalTradesToday = (existingTrades?.length || 0) + closedCount;
       
-      console.log(`[GLOBAL_CLOSE] COMPLETE: closed=${closedCount}, pnl=${closePnl.toFixed(2)}, status=idle`);
+      console.log(`[GLOBAL_CLOSE] COMPLETE: closed=${closedCount}, pnl=${closePnl.toFixed(2)}`);
       
-      // CRITICAL: Return IMMEDIATELY - absolutely NO mode execution after this
       return new Response(JSON.stringify({ 
-        success: true, 
-        action: 'globalClose',
-        closedCount,
+        success: true, action: 'globalClose', closedCount,
         sessionStatus: 'idle',
         stats: {
           todayPnl: totalRealizedPnl,
@@ -619,10 +835,9 @@ serve(async (req) => {
     }
 
     // ================================================================
-    // REGULAR TICK - Only runs if NOT a manual action
+    // REGULAR TICK - Position management + selective new entries
     // ================================================================
     
-    // Load or create paper config
     let { data: config } = await supabase
       .from('paper_config')
       .select('*')
@@ -652,7 +867,6 @@ serve(async (req) => {
     const marketConfig = config.market_config || DEFAULT_MARKET_CONFIG;
     const sessionStatus: SessionStatus = config.session_status || 'idle';
 
-    // Get starting equity
     const { data: dailyStats } = await supabase
       .from('paper_stats_daily')
       .select('equity_start')
@@ -669,7 +883,6 @@ serve(async (req) => {
 
     const startingEquity = dailyStats?.equity_start ?? account?.equity ?? 10000;
 
-    // Load positions and trades
     const { data: positions } = await supabase
       .from('paper_positions')
       .select('*')
@@ -682,7 +895,6 @@ serve(async (req) => {
       .eq('user_id', userId)
       .eq('session_date', today);
 
-    // Calculate current stats
     const realizedPnl = (todayTrades || []).reduce((sum: number, t: any) => sum + Number(t.realized_pnl), 0);
     const unrealizedPnl = (positions || []).reduce((sum: number, p: any) => sum + Number(p.unrealized_pnl || 0), 0);
     const currentPnl = realizedPnl + unrealizedPnl;
@@ -691,19 +903,16 @@ serve(async (req) => {
     const wins = (todayTrades || []).filter((t: any) => Number(t.realized_pnl) > 0).length;
     const winRate = closedCount > 0 ? (wins / closedCount) * 100 : 50;
 
-    // Check if daily loss limit is hit - HALT TRADING
+    // Check daily loss limit
     const isHalted = currentPnlPercent <= -riskConfig.maxDailyLossPercent;
     
     if (isHalted && !config.trading_halted_for_day) {
       await supabase.from('system_logs').insert({
-        user_id: userId,
-        level: 'error',
-        source: 'risk',
-        message: `RISK: Trading HALTED - Daily loss limit of ${riskConfig.maxDailyLossPercent}% reached (current: ${currentPnlPercent.toFixed(2)}%)`,
+        user_id: userId, level: 'error', source: 'risk',
+        message: `RISK: Trading HALTED - Daily loss limit of ${riskConfig.maxDailyLossPercent}% reached`,
         meta: { currentPnlPercent, limit: riskConfig.maxDailyLossPercent },
       });
 
-      // Close all positions on halt
       for (const pos of (positions || [])) {
         const tick = ticks[pos.symbol];
         const exitPrice = tick ? (pos.side === 'long' ? tick.bid : tick.ask) : Number(pos.entry_price);
@@ -720,9 +929,7 @@ serve(async (req) => {
       }
 
       await supabase.from('paper_config').update({ 
-        trading_halted_for_day: true, 
-        session_status: 'idle',
-        is_running: false 
+        trading_halted_for_day: true, session_status: 'idle', is_running: false 
       }).eq('user_id', userId);
     }
 
@@ -765,15 +972,19 @@ serve(async (req) => {
       if (burstRequested) {
         await supabase.from('system_logs').insert({
           user_id: userId, level: 'info', source: 'burst',
-          message: `BURST: Mode activated - preparing ${burstConfig.size} micro-positions`,
+          message: `BURST: Mode activated`,
         });
       }
     }
 
-    // Re-fetch positions after closures
+    // Re-fetch positions
     const { data: currentPositions } = await supabase.from('paper_positions').select('*').eq('user_id', userId).eq('closed', false);
 
-    // Mark positions to market and check SL/TP (always do this, even when holding)
+    // ================================================================
+    // POSITION MANAGEMENT - Mark to market, check SL/TP, mode-specific management
+    // ================================================================
+    let managedClosures = 0;
+    
     for (const pos of (currentPositions || [])) {
       const tick = ticks[pos.symbol];
       if (!tick) continue;
@@ -784,7 +995,7 @@ serve(async (req) => {
 
       await supabase.from('paper_positions').update({ unrealized_pnl: unrealizedPnl }).eq('id', pos.id);
 
-      // Check SL/TP exits
+      // Check original SL/TP first
       let closeReason: string | null = null;
       let exitPrice = currentPrice;
 
@@ -795,6 +1006,18 @@ serve(async (req) => {
       if (!closeReason && pos.tp) {
         if (pos.side === 'long' && tick.bid >= Number(pos.tp)) { closeReason = 'tp_hit'; exitPrice = Number(pos.tp); }
         else if (pos.side === 'short' && tick.ask <= Number(pos.tp)) { closeReason = 'tp_hit'; exitPrice = Number(pos.tp); }
+      }
+
+      // Mode-specific management (if no original SL/TP hit)
+      if (!closeReason) {
+        const modeKey = pos.mode as keyof typeof MODE_MANAGEMENT_CONFIG;
+        const modeManagement = MODE_MANAGEMENT_CONFIG[modeKey] || MODE_MANAGEMENT_CONFIG.trend;
+        const decision = evaluatePosition(pos as Position, tick, modeManagement);
+        
+        if (decision.action === 'close') {
+          closeReason = decision.reason || 'managed_close';
+          exitPrice = decision.exitPrice || currentPrice;
+        }
       }
 
       if (closeReason) {
@@ -808,22 +1031,24 @@ serve(async (req) => {
           realized_pnl: realizedPnl, reason: closeReason, session_date: today, batch_id: pos.batch_id,
         });
         await supabase.from('paper_positions').delete().eq('id', pos.id);
+        managedClosures++;
 
         await supabase.from('system_logs').insert({
           user_id: userId,
           level: realizedPnl >= 0 ? 'info' : 'warn',
           source: 'execution',
-          message: `EXECUTION: ${pos.symbol} ${pos.side.toUpperCase()} closed - ${closeReason} | P&L: ${realizedPnl >= 0 ? '+' : ''}$${realizedPnl.toFixed(2)}`,
-          meta: { pnl: realizedPnl, mode: pos.mode },
+          message: `${pos.mode.toUpperCase()}: ${pos.symbol} ${pos.side.toUpperCase()} closed - ${closeReason} | P&L: ${realizedPnl >= 0 ? '+' : ''}$${realizedPnl.toFixed(2)}`,
+          meta: { pnl: realizedPnl, mode: pos.mode, reason: closeReason },
         });
       }
     }
 
-    // ===== RUN TRADING MODES (only if running, not paused, not halted) =====
+    // ================================================================
+    // RUN TRADING MODES - Only if running, not holding, not halted
+    // ================================================================
     const { data: finalPositions } = await supabase.from('paper_positions').select('*').eq('user_id', userId).eq('closed', false);
     const { data: finalTrades } = await supabase.from('paper_trades').select('*').eq('user_id', userId).eq('session_date', today);
     
-    // Recalculate stats
     const finalRealizedPnl = (finalTrades || []).reduce((sum: number, t: any) => sum + Number(t.realized_pnl), 0);
     const finalUnrealizedPnl = (finalPositions || []).reduce((sum: number, p: any) => sum + Number(p.unrealized_pnl || 0), 0);
     const finalTodayPnl = finalRealizedPnl + finalUnrealizedPnl;
@@ -832,18 +1057,17 @@ serve(async (req) => {
     const finalWins = (finalTrades || []).filter((t: any) => Number(t.realized_pnl) > 0).length;
     const finalWinRate = finalClosedCount > 0 ? (finalWins / finalClosedCount) * 100 : 50;
 
-    // CRITICAL: Re-fetch session status right before deciding to open new trades
+    // Re-fetch session status
     const { data: freshConfig } = await supabase.from('paper_config').select('session_status, is_running').eq('user_id', userId).maybeSingle();
     const freshSessionStatus: SessionStatus = freshConfig?.session_status || 'idle';
     const freshIsRunning = freshConfig?.is_running ?? false;
     
-    // Determine if we should run modes (ONLY when status is explicitly 'running' AND is_running is true)
     const shouldRunModes = freshSessionStatus === 'running' && freshIsRunning && !isHalted && !config.trading_halted_for_day;
     
-    console.log(`[ENGINE] sessionStatus=${freshSessionStatus}, is_running=${freshIsRunning}, shouldRunModes=${shouldRunModes}, enabledModes=${JSON.stringify(modeConfig.enabledModes)}`);
+    console.log(`[ENGINE] status=${freshSessionStatus}, running=${freshIsRunning}, shouldRunModes=${shouldRunModes}, positions=${(finalPositions || []).length}, managedClosures=${managedClosures}`);
     
     if (shouldRunModes) {
-      // Calculate current ACTUAL risk exposure based on stop-loss distance
+      // Calculate risk exposure
       const currentRiskExposure = (finalPositions || []).reduce((sum: number, p: any) => {
         const entryPrice = Number(p.entry_price);
         const sl = p.sl ? Number(p.sl) : entryPrice * 0.99;
@@ -852,11 +1076,12 @@ serve(async (req) => {
         return sum + (actualRisk / startingEquity) * 100;
       }, 0);
       
-      const paperRiskCapacity = 50;
-      const remainingRiskCapacity = paperRiskCapacity - currentRiskExposure;
-      const availableSlots = (riskConfig.maxOpenTrades || 20) - (finalPositions || []).length;
+      const maxConcurrentRisk = riskConfig.maxConcurrentRiskPercent || 50;
+      const remainingRiskCapacity = maxConcurrentRisk - currentRiskExposure;
+      const maxOpenTrades = riskConfig.maxOpenTrades || 20;
+      const availableSlots = maxOpenTrades - (finalPositions || []).length;
       
-      console.log(`[ENGINE] currentRisk=${currentRiskExposure.toFixed(2)}%, remainingCapacity=${remainingRiskCapacity.toFixed(2)}%, availableSlots=${availableSlots}`);
+      console.log(`[ENGINE] risk=${currentRiskExposure.toFixed(2)}%, capacity=${remainingRiskCapacity.toFixed(2)}%, slots=${availableSlots}`);
 
       if (remainingRiskCapacity > 0 && availableSlots > 0) {
         const ctx: EngineContext = {
@@ -868,9 +1093,11 @@ serve(async (req) => {
           modeSettings: modeConfig.modeSettings || {},
           burstConfig,
           burstRequested: config.burst_requested,
+          openPositions: finalPositions || [],
+          riskConfig,
         };
 
-        // Check burst lock status
+        // Check burst lock
         const burstTrades = (finalTrades || []).filter((t: any) => t.mode === 'burst');
         const burstPnl = burstTrades.reduce((sum: number, t: any) => sum + Number(t.realized_pnl), 0);
         const burstPnlPercent = startingEquity > 0 ? (burstPnl / startingEquity) * 100 : 0;
@@ -881,7 +1108,6 @@ serve(async (req) => {
           modesToRun.add('burst');
         }
 
-        // Run enabled modes
         const allProposedOrders: ProposedOrder[] = [];
         
         for (const mode of modesToRun) {
@@ -889,7 +1115,7 @@ serve(async (req) => {
             if (config.burst_requested) {
               await supabase.from('system_logs').insert({
                 user_id: userId, level: 'info', source: 'burst',
-                message: `BURST: Mode locked - Daily profit target of ${burstConfig.dailyProfitTargetPercent}% reached`,
+                message: `BURST: Mode locked - Daily target reached`,
               });
             }
             continue;
@@ -906,20 +1132,19 @@ serve(async (req) => {
           }
         }
 
-        // Apply risk guardrails and open positions
+        // Apply risk and open positions
         let openedCount = 0;
         let riskBlockedCount = 0;
-        let dbErrorCount = 0;
         const openedByMode: Record<string, number> = {};
         const riskBlockReasons: string[] = [];
-        const dbErrors: string[] = [];
         
-        const maxTradesThisTick = Math.min(availableSlots, 5); // Reduced from 25 to 5 for controlled execution
+        // Respect available slots, not a hard-coded limit
+        const maxThisTick = Math.min(availableSlots, 5);
 
         for (const order of allProposedOrders) {
-          if (openedCount >= maxTradesThisTick) {
+          if (openedCount >= maxThisTick) {
             riskBlockedCount++;
-            riskBlockReasons.push(`slots_exhausted`);
+            riskBlockReasons.push('tick_limit');
             break;
           }
           
@@ -929,7 +1154,8 @@ serve(async (req) => {
           const actualRiskAmount = order.size * slDistance;
           const actualRiskPercent = (actualRiskAmount / startingEquity) * 100;
           
-          const maxRiskPerTrade = 5;
+          // Use risk config, not magic numbers
+          const maxRiskPerTrade = riskConfig.riskPerTrade || 5;
           if (actualRiskPercent > maxRiskPerTrade) {
             riskBlockedCount++;
             riskBlockReasons.push(`per_trade_risk:${actualRiskPercent.toFixed(1)}%`);
@@ -937,7 +1163,7 @@ serve(async (req) => {
           }
 
           const currentSymbolPositions = (finalPositions || []).filter((p: any) => p.symbol === order.symbol).length + openedCount;
-          const maxPerSymbol = order.mode === 'burst' ? 50 : 10;
+          const maxPerSymbol = riskConfig.maxPerSymbolExposure || 10;
           
           if (currentSymbolPositions >= maxPerSymbol) {
             riskBlockedCount++;
@@ -945,7 +1171,6 @@ serve(async (req) => {
             continue;
           }
 
-          // Attempt to insert position
           const insertPayload = {
             user_id: userId,
             symbol: order.symbol,
@@ -963,8 +1188,6 @@ serve(async (req) => {
           
           if (insertError) {
             console.error(`[ENGINE] Insert error for ${order.symbol}:`, JSON.stringify(insertError));
-            dbErrorCount++;
-            dbErrors.push(`${order.symbol}:${insertError.code || 'unknown'}`);
             continue;
           }
 
@@ -972,7 +1195,7 @@ serve(async (req) => {
           openedByMode[order.mode] = (openedByMode[order.mode] || 0) + 1;
         }
 
-        // Log opened positions by mode
+        // Log opened positions
         for (const [mode, count] of Object.entries(openedByMode)) {
           await supabase.from('system_logs').insert({
             user_id: userId,
@@ -983,7 +1206,6 @@ serve(async (req) => {
           });
         }
         
-        // Log risk-blocked orders
         if (riskBlockedCount > 0) {
           const uniqueReasons = [...new Set(riskBlockReasons)].slice(0, 3).join(', ');
           await supabase.from('system_logs').insert({
@@ -992,20 +1214,10 @@ serve(async (req) => {
             meta: { blocked: riskBlockedCount, reasons: riskBlockReasons },
           });
         }
-        
-        // Log DB errors separately
-        if (dbErrorCount > 0) {
-          const uniqueErrors = [...new Set(dbErrors)].slice(0, 3).join(', ');
-          await supabase.from('system_logs').insert({
-            user_id: userId, level: 'error', source: 'execution',
-            message: `ERROR: ${dbErrorCount} order(s) failed to insert (${uniqueErrors})`,
-            meta: { errors: dbErrors },
-          });
-        }
       }
     }
 
-    // Final position count
+    // Final stats
     const { data: veryFinalPositions } = await supabase.from('paper_positions').select('id').eq('user_id', userId).eq('closed', false);
     const { data: veryFinalTrades } = await supabase.from('paper_trades').select('realized_pnl').eq('user_id', userId).eq('session_date', today);
     
