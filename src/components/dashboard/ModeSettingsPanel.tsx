@@ -2,7 +2,9 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Slider } from '@/components/ui/slider';
+import { Switch } from '@/components/ui/switch';
 import { useFullSessionState } from '@/hooks/useSessionState';
+import { useSessionStore, AutoTpMode } from '@/lib/state/sessionMachine';
 import { cn } from '@/lib/utils';
 
 export function ModeSettingsPanel() {
@@ -13,9 +15,26 @@ export function ModeSettingsPanel() {
     modeConfig,
     updateModeConfig,
   } = useFullSessionState();
+  
+  // Get Auto-TP state from session store
+  const autoTpMode = useSessionStore((s) => s.autoTpMode);
+  const autoTpValue = useSessionStore((s) => s.autoTpValue);
+  const autoTpStopAfterHit = useSessionStore((s) => s.autoTpStopAfterHit);
+  const dispatch = useSessionStore((s) => s.dispatch);
 
   const showBurstScalperControls = selectedMode === 'burst' || selectedMode === 'scalper';
   const showTrendControls = selectedMode === 'trend';
+  
+  // Handle Auto-TP mode change
+  const handleAutoTpModeChange = (mode: AutoTpMode) => {
+    dispatch({ type: 'SET_AUTO_TP_MODE', mode });
+    // Set default value when switching modes
+    if (mode === 'percent' && (autoTpValue === null || autoTpValue <= 0)) {
+      dispatch({ type: 'SET_AUTO_TP_VALUE', value: 1 }); // Default 1%
+    } else if (mode === 'cash' && (autoTpValue === null || autoTpValue <= 0)) {
+      dispatch({ type: 'SET_AUTO_TP_VALUE', value: 20 }); // Default $20
+    }
+  };
 
   return (
     <div className="glass-panel p-4 space-y-3">
@@ -157,18 +176,86 @@ export function ModeSettingsPanel() {
               </SelectContent>
             </Select>
           </div>
-          <div className="space-y-1.5">
-            <Label className="text-[10px] text-muted-foreground uppercase">Auto TP: {riskSettings.dailyProfitTarget}%</Label>
-            <Slider
-              value={[riskSettings.dailyProfitTarget]}
-              onValueChange={([v]) => updateRiskSettings({ dailyProfitTarget: v })}
-              min={0.25}
-              max={20}
-              step={0.25}
-              className="py-1"
-            />
-          </div>
         </div>
+      </div>
+      
+      {/* Auto-TP Controls */}
+      <div className="space-y-3 pt-3 border-t border-border/30">
+        <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Auto Take Profit</h4>
+        
+        <div className="grid grid-cols-2 gap-3">
+          {/* Auto-TP Mode Selector */}
+          <div className="space-y-1">
+            <Label className="text-[10px] text-muted-foreground uppercase">Mode</Label>
+            <Select 
+              value={autoTpMode} 
+              onValueChange={(v: AutoTpMode) => handleAutoTpModeChange(v)}
+            >
+              <SelectTrigger className="h-8 bg-muted/30 border-border/50 text-sm">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="off">Off</SelectItem>
+                <SelectItem value="percent">% of Equity</SelectItem>
+                <SelectItem value="cash">Cash Amount</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          
+          {/* Auto-TP Value - Percent Slider or Cash Input */}
+          {autoTpMode === 'percent' && (
+            <div className="space-y-1.5">
+              <Label className="text-[10px] text-muted-foreground uppercase">Target: {autoTpValue || 1}%</Label>
+              <Slider
+                value={[autoTpValue || 1]}
+                onValueChange={([v]) => dispatch({ type: 'SET_AUTO_TP_VALUE', value: v })}
+                min={0.25}
+                max={20}
+                step={0.25}
+                className="py-1"
+              />
+            </div>
+          )}
+          
+          {autoTpMode === 'cash' && (
+            <div className="space-y-1">
+              <Label className="text-[10px] text-muted-foreground uppercase">Target ($)</Label>
+              <Input
+                type="number"
+                value={autoTpValue || 20}
+                onChange={(e) => dispatch({ type: 'SET_AUTO_TP_VALUE', value: parseFloat(e.target.value) || 0 })}
+                className="h-8 bg-muted/30 border-border/50 text-sm"
+                placeholder="20"
+                min={1}
+              />
+            </div>
+          )}
+          
+          {autoTpMode === 'off' && (
+            <div className="space-y-1">
+              <Label className="text-[10px] text-muted-foreground uppercase">Target</Label>
+              <div className="h-8 flex items-center text-xs text-muted-foreground">Disabled</div>
+            </div>
+          )}
+        </div>
+        
+        {/* Stop After TP Toggle */}
+        <div className={cn(
+          "flex items-center justify-between py-1",
+          autoTpMode === 'off' && "opacity-50"
+        )}>
+          <Label className="text-[10px] text-muted-foreground uppercase">Stop After TP</Label>
+          <Switch
+            checked={autoTpStopAfterHit}
+            onCheckedChange={(checked) => dispatch({ type: 'SET_AUTO_TP_STOP_AFTER_HIT', stopAfterHit: checked })}
+            disabled={autoTpMode === 'off'}
+          />
+        </div>
+        <p className="text-[9px] text-muted-foreground/70">
+          {autoTpStopAfterHit 
+            ? "Engine stops after hitting target. Manual restart required." 
+            : "Infinite mode: auto-restarts with new baseline after each TP."}
+        </p>
       </div>
     </div>
   );

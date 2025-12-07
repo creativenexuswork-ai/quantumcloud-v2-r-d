@@ -229,22 +229,23 @@ export function useSessionActions() {
   }, [clearPnlRefresh, refreshPnl]);
 
   // Auto TP check - runs while engine is active (ONE-SHOT per run)
-  // Uses run lifecycle state to prevent re-entry after Auto-TP fires
+  // Supports percent or cash mode, and infinite looping if stopAfterHit is false
   const startAutoTpCheck = useCallback(() => {
     clearAutoTpCheck();
     
     autoTpCheckRef.current = setInterval(async () => {
       const state = useSessionStore.getState();
-      const { riskSettings: currentRiskSettings } = useTradingState.getState();
       
       // CRITICAL: Only check auto TP when:
       // 1. Session is running
       // 2. No pending action
       // 3. Run is active (runActive === true)
       // 4. Auto-TP has NOT already fired this run (autoTpFired === false)
+      // 5. Auto-TP mode is NOT 'off'
       if (state.status !== 'running' || state.pendingAction) return;
       if (!state.runActive) return; // Run ended, no checks
       if (state.autoTpFired) return; // Already fired this run
+      if (state.autoTpMode === 'off') return; // Auto-TP disabled
       
       // Check if Auto-TP target is set
       if (state.autoTpTargetEquity === null) return;
@@ -261,10 +262,13 @@ export function useSessionActions() {
       
       // Check if we hit the TP target
       if (currentEquity >= targetEquity + buffer && stats.stats.openPositionsCount > 0) {
-        const tpPercent = currentRiskSettings.dailyProfitTarget;
-        console.log(`[AUTO-TP] Target hit: equity ${currentEquity.toFixed(2)} >= target ${targetEquity.toFixed(2)}. Closing positions.`);
+        const tpValue = state.autoTpValue;
+        const tpMode = state.autoTpMode;
+        const stopAfterHit = state.autoTpStopAfterHit;
         
-        // STEP 1: Mark Auto-TP as fired BEFORE closing (one-shot)
+        console.log(`[AUTO-TP] Target hit: equity ${currentEquity.toFixed(2)} >= target ${targetEquity.toFixed(2)}. Mode: ${tpMode}, StopAfterHit: ${stopAfterHit}`);
+        
+        // STEP 1: Mark Auto-TP as fired BEFORE closing (one-shot per run)
         dispatch({ type: 'SET_AUTO_TP_FIRED' });
         
         // STEP 2: Close all positions
@@ -274,23 +278,63 @@ export function useSessionActions() {
         
         // STEP 3: Log the auto TP event
         const { data: { user } } = await supabase.auth.getUser();
+        const tpLabel = tpMode === 'percent' ? `${tpValue}%` : `$${tpValue}`;
+        
         if (user) {
           await supabase.from('system_logs').insert({
             user_id: user.id,
             level: 'info',
             source: 'execution',
-            message: `Auto TP hit – run banked. Target ${tpPercent}% reached.`,
+            message: `Auto TP hit – run banked. Target ${tpLabel} reached.`,
           });
         }
         
-        toast({ 
-          title: 'Auto Take Profit', 
-          description: `Target ${tpPercent}% reached. Run banked – no new trades until next activation.` 
-        });
-        
-        // CRITICAL: Do NOT open any new trades after Auto-TP
-        // runActive is now false, preventing any new entries
-        // User must start a new run to trade again
+        // STEP 4: Handle stop vs infinite mode
+        if (stopAfterHit) {
+          // Stop mode: End the run, no new trades until manual restart
+          dispatch({ type: 'END_RUN', reason: 'auto_tp' });
+          
+          toast({ 
+            title: 'Auto Take Profit', 
+            description: `Target ${tpLabel} reached. Run banked – stopped.` 
+          });
+        } else {
+          // Infinite mode: Start a new run with fresh baseline
+          const newEquity = currentEquity; // Use current equity as new baseline
+          const runId = `run_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+          
+          // Calculate new target based on current mode and value
+          let newTargetEquity: number | null = null;
+          if (tpMode === 'percent' && tpValue && tpValue > 0) {
+            newTargetEquity = newEquity * (1 + tpValue / 100);
+          } else if (tpMode === 'cash' && tpValue && tpValue > 0) {
+            newTargetEquity = newEquity + tpValue;
+          }
+          
+          console.log(`[AUTO-TP INFINITE] Starting new run: id=${runId}, baseline=${newEquity.toFixed(2)}, target=${newTargetEquity?.toFixed(2) || 'none'}`);
+          
+          // Start new run
+          dispatch({ 
+            type: 'START_RUN', 
+            runId, 
+            baselineEquity: newEquity, 
+            targetEquity: newTargetEquity 
+          });
+          
+          if (user) {
+            await supabase.from('system_logs').insert({
+              user_id: user.id,
+              level: 'info',
+              source: 'execution',
+              message: `Auto TP infinite mode: New run started. Baseline $${newEquity.toFixed(2)}, Target $${newTargetEquity?.toFixed(2) || 'none'}`,
+            });
+          }
+          
+          toast({ 
+            title: 'Auto Take Profit', 
+            description: `Target ${tpLabel} reached. New run started automatically.` 
+          });
+        }
         
         queryClient.invalidateQueries({ queryKey: ['paper-stats'] });
       }
@@ -353,14 +397,21 @@ export function useSessionActions() {
       // Get current equity for Auto-TP baseline
       const { data: stats } = await supabase.functions.invoke('paper-stats');
       const currentEquity = stats?.stats?.equity || 10000;
-      const { riskSettings: currentRiskSettings } = useTradingState.getState();
       
       // Generate new run ID
       const runId = `run_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
       
-      // Calculate Auto-TP target (percentage-based)
-      const tpPercent = currentRiskSettings.dailyProfitTarget;
-      const targetEquity = tpPercent > 0 ? currentEquity * (1 + tpPercent / 100) : null;
+      // Get Auto-TP configuration from session state
+      const { autoTpMode, autoTpValue } = useSessionStore.getState();
+      
+      // Calculate Auto-TP target based on mode
+      let targetEquity: number | null = null;
+      if (autoTpMode === 'percent' && autoTpValue && autoTpValue > 0) {
+        targetEquity = currentEquity * (1 + autoTpValue / 100);
+      } else if (autoTpMode === 'cash' && autoTpValue && autoTpValue > 0) {
+        targetEquity = currentEquity + autoTpValue;
+      }
+      // If mode is 'off' or value is invalid, targetEquity stays null (no Auto-TP)
       
       // Dispatch START_RUN action
       dispatch({ 
@@ -370,7 +421,7 @@ export function useSessionActions() {
         targetEquity 
       });
       
-      console.log(`[RUN] Started: id=${runId}, baseline=${currentEquity.toFixed(2)}, target=${targetEquity?.toFixed(2) || 'none'}`);
+      console.log(`[RUN] Started: id=${runId}, baseline=${currentEquity.toFixed(2)}, target=${targetEquity?.toFixed(2) || 'none'}, mode=${autoTpMode}`);
 
       // Run immediate tick
       const result = await runTick();
