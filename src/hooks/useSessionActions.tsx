@@ -2,7 +2,7 @@ import { useCallback, useRef, useEffect } from 'react';
 import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from './useAuth';
 import { toast } from './use-toast';
-import { useSessionStore, TradingMode, getButtonStates, MODE_PRESETS } from '@/lib/state/sessionMachine';
+import { useSessionStore, TradingMode, getButtonStates } from '@/lib/state/sessionMachine';
 import { useQueryClient } from '@tanstack/react-query';
 import { useTradingState } from './useSessionState';
 
@@ -654,7 +654,6 @@ export function useSessionActions() {
   }, [dispatch, runTick, queryClient, clearTickInterval, clearPnlRefresh, clearAutoTpCheck]);
 
   // Change mode (only when idle or stopped)
-  // APPLIES MODE PRESETS: When a mode is selected, all risk and Auto-TP settings are set to that mode's preset
   const changeMode = useCallback(async (newMode: TradingMode) => {
     const state = useSessionStore.getState();
     
@@ -667,29 +666,9 @@ export function useSessionActions() {
       return;
     }
     
-    // Get the preset for the new mode
-    const preset = MODE_PRESETS[newMode];
-    
-    // STEP 1: Update session state with mode and Auto-TP settings from preset
     dispatch({ type: 'SET_MODE', mode: newMode });
-    dispatch({ type: 'SET_AUTO_TP_MODE', mode: preset.autoTpMode });
-    dispatch({ type: 'SET_AUTO_TP_VALUE', value: preset.autoTpValue });
-    dispatch({ type: 'SET_AUTO_TP_STOP_AFTER_HIT', stopAfterHit: preset.autoTpStopAfterHit });
     
-    // STEP 2: Update trading state (risk panel values) via the trading state store
-    const tradingState = useTradingState.getState();
-    tradingState.updateRiskSettings({
-      maxDailyDrawdown: preset.maxDrawdownPercent,
-      maxPerTradeRisk: preset.perTradeRiskPercent,
-    });
-    tradingState.updateModeConfig({
-      burstTradesPerRun: preset.tradesPerRun,
-      maxConcurrentPositions: preset.maxConcurrentTrades,
-      burstDuration: preset.durationPreset,
-      burstTpStyle: preset.tpStyle,
-    });
-    
-    // STEP 3: Persist to backend
+    // Persist to backend
     const { data: { user } } = await supabase.auth.getUser();
     if (user) {
       const backendMode = MODE_TO_BACKEND[newMode];
@@ -700,26 +679,15 @@ export function useSessionActions() {
           enabledModes: [backendMode],
           modeSettings: {},
         },
-        risk_config: {
-          maxDailyLossPercent: preset.maxDrawdownPercent,
-          maxPerTradeRiskPercent: preset.perTradeRiskPercent,
-          maxOpenTrades: preset.maxConcurrentTrades,
-          maxConcurrentRiskPercent: 10,
-          maxPerSymbolExposure: 30,
-        },
-        burst_config: {
-          size: preset.tradesPerRun,
-          dailyProfitTargetPercent: preset.autoTpMode === 'percent' ? preset.autoTpValue : 1,
-          riskPerBurstPercent: 2,
-        },
         // CRITICAL: Set burst_requested flag when burst mode is selected
+        // This flag is required by the backend for burst mode to open trades
         burst_requested: isBurstMode,
       } as any).eq('user_id', user.id);
       
-      console.log(`[MODE] Changed to ${newMode} with presets: trades=${preset.tradesPerRun}, maxConcurrent=${preset.maxConcurrentTrades}, autoTp=${preset.autoTpMode}:${preset.autoTpValue}, stopAfter=${preset.autoTpStopAfterHit}`);
+      console.log(`[MODE] Changed to ${newMode}, burst_requested=${isBurstMode}`);
     }
     
-    toast({ title: 'Mode Changed', description: `Switched to ${newMode.toUpperCase()} mode with preset settings` });
+    toast({ title: 'Mode Changed', description: `Switched to ${newMode.toUpperCase()} mode` });
   }, [dispatch]);
 
   // Reset session (clear halted state, reset to idle)
