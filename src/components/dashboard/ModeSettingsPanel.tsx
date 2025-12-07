@@ -16,11 +16,16 @@ export function ModeSettingsPanel() {
     updateModeConfig,
   } = useFullSessionState();
   
-  // Get Auto-TP state from session store
-  const autoTpMode = useSessionStore((s) => s.autoTpMode);
-  const autoTpValue = useSessionStore((s) => s.autoTpValue);
-  const autoTpStopAfterHit = useSessionStore((s) => s.autoTpStopAfterHit);
+  // Get Auto-TP state from session store with safe defaults
+  const rawAutoTpMode = useSessionStore((s) => s.autoTpMode);
+  const rawAutoTpValue = useSessionStore((s) => s.autoTpValue);
+  const rawAutoTpStopAfterHit = useSessionStore((s) => s.autoTpStopAfterHit);
   const dispatch = useSessionStore((s) => s.dispatch);
+  
+  // Safe defaults to prevent undefined/null crashes
+  const autoTpMode = rawAutoTpMode || 'percent';
+  const autoTpValue = typeof rawAutoTpValue === 'number' ? rawAutoTpValue : 1;
+  const autoTpStopAfterHit = rawAutoTpStopAfterHit ?? false;
 
   const showBurstScalperControls = selectedMode === 'burst' || selectedMode === 'scalper';
   const showTrendControls = selectedMode === 'trend';
