@@ -251,29 +251,24 @@ export function ModeSettingsPanel() {
           )}
         </div>
         
-        {/* Helper text for infinite mode */}
-        {autoTpMode === 'infinite' && (
-          <p className="text-[9px] text-muted-foreground/70">
-            Infinite mode: auto-restarts with new baseline after each TP.
-          </p>
-        )}
-        
         {/* Stop After TP Toggle - hidden for off and infinite modes */}
         {autoTpMode !== 'off' && autoTpMode !== 'infinite' && (
-          <>
-            <div className="flex items-center justify-between py-1">
-              <Label className="text-[10px] text-muted-foreground uppercase">Stop After TP</Label>
-              <Switch
-                checked={autoTpStopAfterHit}
-                onCheckedChange={(checked) => dispatch({ type: 'SET_AUTO_TP_STOP_AFTER_HIT', stopAfterHit: checked })}
-              />
-            </div>
-            <p className="text-[9px] text-muted-foreground/70">
-              {autoTpStopAfterHit 
-                ? "Engine stops after hitting target. Manual restart required." 
-                : "Continuous mode: auto-restarts with new baseline after each TP."}
-            </p>
-          </>
+          <div className="flex items-center justify-between py-1">
+            <Label className="text-[10px] text-muted-foreground uppercase">Stop After TP</Label>
+            <Switch
+              checked={autoTpStopAfterHit}
+              onCheckedChange={(checked) => dispatch({ type: 'SET_AUTO_TP_STOP_AFTER_HIT', stopAfterHit: checked })}
+            />
+          </div>
+        )}
+        
+        {/* Helper text - conditional based on mode */}
+        {autoTpMode !== 'off' && (
+          <p className="text-[9px] text-muted-foreground/70">
+            {autoTpMode === 'infinite'
+              ? "Infinite mode: keeps trading and sets a new baseline after each TP."
+              : "Takes profit at the target. Enable \"Stop after TP\" to end the run once TP is hit."}
+          </p>
         )}
       </div>
     </div>
