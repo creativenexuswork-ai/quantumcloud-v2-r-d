@@ -8,6 +8,9 @@ export type AccountType = 'paper' | 'live';
 // pendingAction is set ONLY during explicit user actions, NOT during polling
 export type PendingAction = 'activate' | 'hold' | 'takeProfit' | 'closeAll' | null;
 
+// Auto-TP mode types
+export type AutoTpMode = 'off' | 'percent' | 'cash';
+
 export interface SessionState {
   status: SessionStatus;
   mode: TradingMode;
@@ -30,6 +33,11 @@ export interface SessionState {
   autoTpFired: boolean;           // Whether Auto-TP has fired for this run (one-shot)
   autoTpBaselineEquity: number | null;  // Equity at run start (baseline for TP calculation)
   autoTpTargetEquity: number | null;    // Target equity for Auto-TP trigger
+  
+  // ============== Auto-TP Configuration ==============
+  autoTpMode: AutoTpMode;         // 'off' | 'percent' | 'cash'
+  autoTpValue: number | null;     // For percent: % value (e.g. 1 = 1%). For cash: currency amount
+  autoTpStopAfterHit: boolean;    // true = stop after TP, false = infinite mode (auto restart)
 }
 
 export interface ButtonStates {
@@ -63,6 +71,10 @@ export function getInitialSessionState(): SessionState {
     autoTpFired: false,
     autoTpBaselineEquity: null,
     autoTpTargetEquity: null,
+    // Auto-TP configuration - defaults to percent mode with 1% target, infinite mode
+    autoTpMode: 'percent',
+    autoTpValue: 1, // Default 1% target
+    autoTpStopAfterHit: false, // Infinite mode by default
   };
 }
 
@@ -114,7 +126,11 @@ export type SessionAction =
   // Run lifecycle actions
   | { type: 'START_RUN'; runId: string; baselineEquity: number; targetEquity: number | null }
   | { type: 'END_RUN'; reason: 'auto_tp' | 'manual_stop' | 'close_all' }
-  | { type: 'SET_AUTO_TP_FIRED' };
+  | { type: 'SET_AUTO_TP_FIRED' }
+  // Auto-TP configuration actions
+  | { type: 'SET_AUTO_TP_MODE'; mode: AutoTpMode }
+  | { type: 'SET_AUTO_TP_VALUE'; value: number | null }
+  | { type: 'SET_AUTO_TP_STOP_AFTER_HIT'; stopAfterHit: boolean };
 
 export function transitionSession(state: SessionState, action: SessionAction): SessionState {
   switch (action.type) {
@@ -228,12 +244,22 @@ export function transitionSession(state: SessionState, action: SessionAction): S
       };
     
     case 'SET_AUTO_TP_FIRED':
-      // Mark Auto-TP as fired (one-shot, no further TP checks this run)
+      // Mark Auto-TP as fired (one-shot per run)
+      // Note: runActive control is handled by the action handler based on autoTpStopAfterHit
       return {
         ...state,
         autoTpFired: true,
-        runActive: false, // Prevent new trades after Auto-TP
       };
+    
+    // ============== Auto-TP Configuration Actions ==============
+    case 'SET_AUTO_TP_MODE':
+      return { ...state, autoTpMode: action.mode };
+    
+    case 'SET_AUTO_TP_VALUE':
+      return { ...state, autoTpValue: action.value };
+    
+    case 'SET_AUTO_TP_STOP_AFTER_HIT':
+      return { ...state, autoTpStopAfterHit: action.stopAfterHit };
     
     default:
       return state;
