@@ -9,7 +9,7 @@ export type AccountType = 'paper' | 'live';
 export type PendingAction = 'activate' | 'hold' | 'takeProfit' | 'closeAll' | null;
 
 // Auto-TP mode types
-export type AutoTpMode = 'off' | 'percent' | 'cash';
+export type AutoTpMode = 'off' | 'percent' | 'cash' | 'infinite';
 
 export interface SessionState {
   status: SessionStatus;

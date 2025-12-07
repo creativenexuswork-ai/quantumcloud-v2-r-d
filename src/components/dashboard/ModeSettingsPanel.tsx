@@ -34,6 +34,10 @@ export function ModeSettingsPanel() {
     } else if (mode === 'cash' && (autoTpValue === null || autoTpValue <= 0)) {
       dispatch({ type: 'SET_AUTO_TP_VALUE', value: 20 }); // Default $20
     }
+    // For infinite mode, value is ignored but we set stopAfterHit to false
+    if (mode === 'infinite') {
+      dispatch({ type: 'SET_AUTO_TP_STOP_AFTER_HIT', stopAfterHit: false });
+    }
   };
 
   return (
@@ -198,6 +202,7 @@ export function ModeSettingsPanel() {
                 <SelectItem value="off">Off</SelectItem>
                 <SelectItem value="percent">% of Equity</SelectItem>
                 <SelectItem value="cash">Cash Amount</SelectItem>
+                <SelectItem value="infinite">Infinite</SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -237,25 +242,39 @@ export function ModeSettingsPanel() {
               <div className="h-8 flex items-center text-xs text-muted-foreground">Disabled</div>
             </div>
           )}
+          
+          {autoTpMode === 'infinite' && (
+            <div className="space-y-1">
+              <Label className="text-[10px] text-muted-foreground uppercase">Target</Label>
+              <div className="h-8 flex items-center text-xs text-muted-foreground">Auto</div>
+            </div>
+          )}
         </div>
         
-        {/* Stop After TP Toggle */}
-        <div className={cn(
-          "flex items-center justify-between py-1",
-          autoTpMode === 'off' && "opacity-50"
-        )}>
-          <Label className="text-[10px] text-muted-foreground uppercase">Stop After TP</Label>
-          <Switch
-            checked={autoTpStopAfterHit}
-            onCheckedChange={(checked) => dispatch({ type: 'SET_AUTO_TP_STOP_AFTER_HIT', stopAfterHit: checked })}
-            disabled={autoTpMode === 'off'}
-          />
-        </div>
-        <p className="text-[9px] text-muted-foreground/70">
-          {autoTpStopAfterHit 
-            ? "Engine stops after hitting target. Manual restart required." 
-            : "Infinite mode: auto-restarts with new baseline after each TP."}
-        </p>
+        {/* Helper text for infinite mode */}
+        {autoTpMode === 'infinite' && (
+          <p className="text-[9px] text-muted-foreground/70">
+            Infinite mode: auto-restarts with new baseline after each TP.
+          </p>
+        )}
+        
+        {/* Stop After TP Toggle - hidden for off and infinite modes */}
+        {autoTpMode !== 'off' && autoTpMode !== 'infinite' && (
+          <>
+            <div className="flex items-center justify-between py-1">
+              <Label className="text-[10px] text-muted-foreground uppercase">Stop After TP</Label>
+              <Switch
+                checked={autoTpStopAfterHit}
+                onCheckedChange={(checked) => dispatch({ type: 'SET_AUTO_TP_STOP_AFTER_HIT', stopAfterHit: checked })}
+              />
+            </div>
+            <p className="text-[9px] text-muted-foreground/70">
+              {autoTpStopAfterHit 
+                ? "Engine stops after hitting target. Manual restart required." 
+                : "Continuous mode: auto-restarts with new baseline after each TP."}
+            </p>
+          </>
+        )}
       </div>
     </div>
   );
