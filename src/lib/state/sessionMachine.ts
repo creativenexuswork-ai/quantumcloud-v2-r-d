@@ -329,30 +329,8 @@ interface SessionStore extends SessionState {
   getButtonStates: () => ButtonStates;
 }
 
-const initialState = getInitialSessionState();
-
 export const useSessionStore = create<SessionStore>((set, get) => ({
-  // Spread all initial values explicitly
-  status: initialState.status,
-  mode: initialState.mode,
-  accountType: initialState.accountType,
-  hasPositions: initialState.hasPositions,
-  openCount: initialState.openCount,
-  pnlToday: initialState.pnlToday,
-  tradesToday: initialState.tradesToday,
-  winRate: initialState.winRate,
-  equity: initialState.equity,
-  lastError: initialState.lastError,
-  halted: initialState.halted,
-  pendingAction: initialState.pendingAction,
-  runId: initialState.runId,
-  runActive: initialState.runActive,
-  autoTpFired: initialState.autoTpFired,
-  autoTpBaselineEquity: initialState.autoTpBaselineEquity,
-  autoTpTargetEquity: initialState.autoTpTargetEquity,
-  autoTpMode: initialState.autoTpMode,
-  autoTpValue: initialState.autoTpValue,
-  autoTpStopAfterHit: initialState.autoTpStopAfterHit,
+  ...getInitialSessionState(),
   
   dispatch: (action: SessionAction) => {
     set((state) => transitionSession(state, action));

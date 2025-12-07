@@ -667,35 +667,27 @@ export function useSessionActions() {
       return;
     }
     
-    // Get the preset for the new mode (with safe fallback)
-    const preset = MODE_PRESETS[newMode] || MODE_PRESETS.burst;
+    // Get the preset for the new mode
+    const preset = MODE_PRESETS[newMode];
     
     // STEP 1: Update session state with mode and Auto-TP settings from preset
     dispatch({ type: 'SET_MODE', mode: newMode });
-    dispatch({ type: 'SET_AUTO_TP_MODE', mode: preset.autoTpMode || 'percent' });
-    dispatch({ type: 'SET_AUTO_TP_VALUE', value: preset.autoTpValue ?? 1 });
-    dispatch({ type: 'SET_AUTO_TP_STOP_AFTER_HIT', stopAfterHit: preset.autoTpStopAfterHit ?? false });
+    dispatch({ type: 'SET_AUTO_TP_MODE', mode: preset.autoTpMode });
+    dispatch({ type: 'SET_AUTO_TP_VALUE', value: preset.autoTpValue });
+    dispatch({ type: 'SET_AUTO_TP_STOP_AFTER_HIT', stopAfterHit: preset.autoTpStopAfterHit });
     
     // STEP 2: Update trading state (risk panel values) via the trading state store
-    try {
-      const tradingState = useTradingState.getState();
-      if (tradingState && tradingState.updateRiskSettings) {
-        tradingState.updateRiskSettings({
-          maxDailyDrawdown: preset.maxDrawdownPercent ?? 5,
-          maxPerTradeRisk: preset.perTradeRiskPercent ?? 1,
-        });
-      }
-      if (tradingState && tradingState.updateModeConfig) {
-        tradingState.updateModeConfig({
-          burstTradesPerRun: preset.tradesPerRun ?? 20,
-          maxConcurrentPositions: preset.maxConcurrentTrades ?? 15,
-          burstDuration: preset.durationPreset ?? 'short',
-          burstTpStyle: preset.tpStyle ?? 'fast',
-        });
-      }
-    } catch (err) {
-      console.warn('Failed to update trading state:', err);
-    }
+    const tradingState = useTradingState.getState();
+    tradingState.updateRiskSettings({
+      maxDailyDrawdown: preset.maxDrawdownPercent,
+      maxPerTradeRisk: preset.perTradeRiskPercent,
+    });
+    tradingState.updateModeConfig({
+      burstTradesPerRun: preset.tradesPerRun,
+      maxConcurrentPositions: preset.maxConcurrentTrades,
+      burstDuration: preset.durationPreset,
+      burstTpStyle: preset.tpStyle,
+    });
     
     // STEP 3: Persist to backend
     const { data: { user } } = await supabase.auth.getUser();
