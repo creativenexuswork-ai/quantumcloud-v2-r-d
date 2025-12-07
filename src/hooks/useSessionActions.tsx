@@ -87,6 +87,7 @@ export function useSessionActions() {
   }, [dispatch]);
 
   // Run a single tick - strategy execution only
+  // CRITICAL: Respects runActive flag to prevent new trades after run ends
   const runTick = useCallback(async (options?: { globalClose?: boolean; takeBurstProfit?: boolean; takeProfit?: boolean }) => {
     const isCloseAction = options?.globalClose || options?.takeProfit;
     
@@ -96,11 +97,17 @@ export function useSessionActions() {
       return null;
     }
     
-    const currentStatus = useSessionStore.getState().status;
+    const state = useSessionStore.getState();
     
     // Regular ticks only run when session is 'running'
     if (!isCloseAction && !options?.takeBurstProfit) {
-      if (currentStatus !== 'running') {
+      if (state.status !== 'running') {
+        return null;
+      }
+      
+      // CRITICAL: Block new trades if run is not active (Auto-TP fired or manual stop)
+      if (!state.runActive) {
+        console.log('[TICK] Blocked - runActive is false (run ended, no new trades)');
         return null;
       }
     }
@@ -171,18 +178,24 @@ export function useSessionActions() {
     }
   }, [queryClient, dispatch]);
 
-  // Start tick interval - only runs when session is RUNNING
+  // Start tick interval - only runs when session is RUNNING AND runActive is true
   const startTickInterval = useCallback(() => {
     clearTickInterval();
     intervalRef.current = setInterval(async () => {
-      const currentStatus = useSessionStore.getState().status;
-      const pendingAction = useSessionStore.getState().pendingAction;
+      const state = useSessionStore.getState();
       
       // CRITICAL: Do NOT tick if any action is pending
-      if (pendingAction) return;
+      if (state.pendingAction) return;
       
       // Only tick if explicitly running
-      if (currentStatus !== 'running') return;
+      if (state.status !== 'running') return;
+      
+      // CRITICAL: Do NOT open new trades if run is not active
+      // This prevents re-entry after Auto-TP fires or after manual stop
+      if (!state.runActive) {
+        console.log('[TICK] Skipped - runActive is false (run ended)');
+        return;
+      }
       
       const result = await runTick();
       if (result?.halted) {
@@ -195,6 +208,7 @@ export function useSessionActions() {
         clearPnlRefresh();
         clearAutoTpCheck();
         dispatch({ type: 'SET_HALTED', halted: true });
+        dispatch({ type: 'END_RUN', reason: 'manual_stop' });
       }
     }, TICK_INTERVAL_MS);
   }, [runTick, clearTickInterval, clearPnlRefresh, clearAutoTpCheck, dispatch]);
@@ -214,7 +228,8 @@ export function useSessionActions() {
     }, PNL_REFRESH_MS);
   }, [clearPnlRefresh, refreshPnl]);
 
-  // Auto TP check - runs while engine is active (NO auto-resume batch opening)
+  // Auto TP check - runs while engine is active (ONE-SHOT per run)
+  // Uses run lifecycle state to prevent re-entry after Auto-TP fires
   const startAutoTpCheck = useCallback(() => {
     clearAutoTpCheck();
     
@@ -222,43 +237,60 @@ export function useSessionActions() {
       const state = useSessionStore.getState();
       const { riskSettings: currentRiskSettings } = useTradingState.getState();
       
-      // Only check auto TP when running and no pending action
+      // CRITICAL: Only check auto TP when:
+      // 1. Session is running
+      // 2. No pending action
+      // 3. Run is active (runActive === true)
+      // 4. Auto-TP has NOT already fired this run (autoTpFired === false)
       if (state.status !== 'running' || state.pendingAction) return;
+      if (!state.runActive) return; // Run ended, no checks
+      if (state.autoTpFired) return; // Already fired this run
       
-      // Get current P&L data
+      // Check if Auto-TP target is set
+      if (state.autoTpTargetEquity === null) return;
+      
+      // Get current equity
       const { data: stats } = await supabase.functions.invoke('paper-stats');
       if (!stats?.stats) return;
       
-      const todayPnlPercent = stats.stats.todayPnlPercent || 0;
-      const tpTarget = currentRiskSettings.dailyProfitTarget;
+      const currentEquity = stats.stats.equity || 10000;
+      const targetEquity = state.autoTpTargetEquity;
+      
+      // Small buffer to prevent flicker (0.1% of target)
+      const buffer = targetEquity * 0.001;
       
       // Check if we hit the TP target
-      if (todayPnlPercent >= tpTarget && stats.stats.openPositionsCount > 0) {
-        console.log(`[AUTO-TP] Target hit: ${todayPnlPercent.toFixed(2)}% >= ${tpTarget}%. Closing positions.`);
+      if (currentEquity >= targetEquity + buffer && stats.stats.openPositionsCount > 0) {
+        const tpPercent = currentRiskSettings.dailyProfitTarget;
+        console.log(`[AUTO-TP] Target hit: equity ${currentEquity.toFixed(2)} >= target ${targetEquity.toFixed(2)}. Closing positions.`);
         
-        // Close all positions - NO auto-resume, just close
+        // STEP 1: Mark Auto-TP as fired BEFORE closing (one-shot)
+        dispatch({ type: 'SET_AUTO_TP_FIRED' });
+        
+        // STEP 2: Close all positions
         dispatch({ type: 'SET_PENDING_ACTION', pendingAction: 'takeProfit' });
         await runTick({ takeProfit: true });
         dispatch({ type: 'SET_PENDING_ACTION', pendingAction: null });
         
-        // Log the auto TP event
+        // STEP 3: Log the auto TP event
         const { data: { user } } = await supabase.auth.getUser();
         if (user) {
           await supabase.from('system_logs').insert({
             user_id: user.id,
             level: 'info',
             source: 'execution',
-            message: `AUTO-TP: Target ${tpTarget}% reached (${todayPnlPercent.toFixed(2)}%). Positions closed.`,
+            message: `Auto TP hit – run banked. Target ${tpPercent}% reached.`,
           });
         }
         
         toast({ 
           title: 'Auto Take Profit', 
-          description: `Target ${tpTarget}% reached. Positions closed.` 
+          description: `Target ${tpPercent}% reached. Run banked – no new trades until next activation.` 
         });
         
-        // DO NOT call runTick() again - no auto-resume batch opening
-        // Engine will naturally open new positions on the next regular tick cycle
+        // CRITICAL: Do NOT open any new trades after Auto-TP
+        // runActive is now false, preventing any new entries
+        // User must start a new run to trade again
         
         queryClient.invalidateQueries({ queryKey: ['paper-stats'] });
       }
@@ -266,6 +298,7 @@ export function useSessionActions() {
   }, [runTick, queryClient, clearAutoTpCheck, dispatch]);
 
   // ACTIVATE - Start trading session OR Resume from holding
+  // Creates a new run with Auto-TP parameters
   const activate = useCallback(async () => {
     const state = useSessionStore.getState();
     
@@ -315,6 +348,29 @@ export function useSessionActions() {
           ? `SESSION: Resumed - ${state.mode.toUpperCase()} mode active`
           : `SESSION: Started - ${state.mode.toUpperCase()} mode active`,
       });
+      
+      // ============== START NEW RUN ==============
+      // Get current equity for Auto-TP baseline
+      const { data: stats } = await supabase.functions.invoke('paper-stats');
+      const currentEquity = stats?.stats?.equity || 10000;
+      const { riskSettings: currentRiskSettings } = useTradingState.getState();
+      
+      // Generate new run ID
+      const runId = `run_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      
+      // Calculate Auto-TP target (percentage-based)
+      const tpPercent = currentRiskSettings.dailyProfitTarget;
+      const targetEquity = tpPercent > 0 ? currentEquity * (1 + tpPercent / 100) : null;
+      
+      // Dispatch START_RUN action
+      dispatch({ 
+        type: 'START_RUN', 
+        runId, 
+        baselineEquity: currentEquity, 
+        targetEquity 
+      });
+      
+      console.log(`[RUN] Started: id=${runId}, baseline=${currentEquity.toFixed(2)}, target=${targetEquity?.toFixed(2) || 'none'}`);
 
       // Run immediate tick
       const result = await runTick();
@@ -330,6 +386,7 @@ export function useSessionActions() {
           session_status: 'idle',
         } as any).eq('user_id', user.id);
         dispatch({ type: 'SET_HALTED', halted: true });
+        dispatch({ type: 'END_RUN', reason: 'manual_stop' });
         dispatch({ type: 'SET_PENDING_ACTION', pendingAction: null });
         return;
       }
@@ -461,6 +518,7 @@ export function useSessionActions() {
 
   // ================================================================
   // CLOSE ALL - Single atomic action with optimistic UI update
+  // Ends the current run - no new trades allowed until next ACTIVATE
   // ================================================================
   const closeAll = useCallback(async () => {
     const state = useSessionStore.getState();
@@ -475,14 +533,17 @@ export function useSessionActions() {
     dispatch({ type: 'SYNC_POSITIONS', hasPositions: false, openCount: 0 }); // Optimistic
     dispatch({ type: 'SYNC_STATUS', status: 'idle' }); // Optimistic
     
-    // STEP 2: Stop ALL intervals
+    // STEP 2: End the run IMMEDIATELY (prevents re-entry)
+    dispatch({ type: 'END_RUN', reason: 'close_all' });
+    
+    // STEP 3: Stop ALL intervals
     clearTickInterval();
     clearPnlRefresh();
     clearAutoTpCheck();
     tickInFlightRef.current = false;
     
     try {
-      // STEP 3: Update database FIRST to prevent tick race condition
+      // STEP 4: Update database FIRST to prevent tick race condition
       const { data: { user } } = await supabase.auth.getUser();
       if (user) {
         await supabase.from('paper_config').update({
@@ -490,12 +551,19 @@ export function useSessionActions() {
           session_status: 'idle',
           burst_requested: false,
         } as any).eq('user_id', user.id);
+        
+        await supabase.from('system_logs').insert({
+          user_id: user.id,
+          level: 'info',
+          source: 'execution',
+          message: 'SESSION: Closed - run ended, no new trades until next activation',
+        });
       }
       
-      // STEP 4: Call backend ONCE to close positions
+      // STEP 5: Call backend ONCE to close positions
       const result = await runTick({ globalClose: true });
       
-      // STEP 5: Sync final stats from backend
+      // STEP 6: Sync final stats from backend
       if (result?.stats) {
         dispatch({
           type: 'SYNC_PNL',
@@ -510,7 +578,7 @@ export function useSessionActions() {
       
       toast({ 
         title: 'Session Closed', 
-        description: `${result?.closedCount || 0} positions closed.` 
+        description: `${result?.closedCount || 0} positions closed. Run ended.` 
       });
       
     } catch (error) {

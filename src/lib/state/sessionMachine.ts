@@ -22,6 +22,14 @@ export interface SessionState {
   halted: boolean;
   // pendingAction: set only during user-initiated transitions (not polling)
   pendingAction: PendingAction;
+  
+  // ============== Run Lifecycle State ==============
+  // These control the run lifecycle and Auto-TP behavior
+  runId: string | null;           // Unique identifier for current run (timestamp-based)
+  runActive: boolean;             // Whether a run is currently active (controls trade entry)
+  autoTpFired: boolean;           // Whether Auto-TP has fired for this run (one-shot)
+  autoTpBaselineEquity: number | null;  // Equity at run start (baseline for TP calculation)
+  autoTpTargetEquity: number | null;    // Target equity for Auto-TP trigger
 }
 
 export interface ButtonStates {
@@ -49,6 +57,12 @@ export function getInitialSessionState(): SessionState {
     lastError: null,
     halted: false,
     pendingAction: null,
+    // Run lifecycle - all reset
+    runId: null,
+    runActive: false,
+    autoTpFired: false,
+    autoTpBaselineEquity: null,
+    autoTpTargetEquity: null,
   };
 }
 
@@ -96,7 +110,11 @@ export type SessionAction =
   | { type: 'SYNC_PNL'; pnlToday: number; tradesToday: number; winRate: number; equity: number }
   | { type: 'SET_HALTED'; halted: boolean }
   | { type: 'SET_PENDING_ACTION'; pendingAction: PendingAction }
-  | { type: 'SYNC_STATUS'; status: SessionStatus };
+  | { type: 'SYNC_STATUS'; status: SessionStatus }
+  // Run lifecycle actions
+  | { type: 'START_RUN'; runId: string; baselineEquity: number; targetEquity: number | null }
+  | { type: 'END_RUN'; reason: 'auto_tp' | 'manual_stop' | 'close_all' }
+  | { type: 'SET_AUTO_TP_FIRED' };
 
 export function transitionSession(state: SessionState, action: SessionAction): SessionState {
   switch (action.type) {
@@ -185,6 +203,37 @@ export function transitionSession(state: SessionState, action: SessionAction): S
         return state;
       }
       return { ...state, status: action.status };
+    
+    // ============== Run Lifecycle Actions ==============
+    case 'START_RUN':
+      // Initialize a new run with Auto-TP parameters
+      return {
+        ...state,
+        runId: action.runId,
+        runActive: true,
+        autoTpFired: false,
+        autoTpBaselineEquity: action.baselineEquity,
+        autoTpTargetEquity: action.targetEquity,
+      };
+    
+    case 'END_RUN':
+      // End current run - no new trades allowed until next START_RUN
+      return {
+        ...state,
+        runActive: false,
+        // Clear run ID only on close_all (full reset)
+        runId: action.reason === 'close_all' ? null : state.runId,
+        // Set status to idle for manual_stop and close_all
+        status: action.reason === 'auto_tp' ? state.status : 'idle',
+      };
+    
+    case 'SET_AUTO_TP_FIRED':
+      // Mark Auto-TP as fired (one-shot, no further TP checks this run)
+      return {
+        ...state,
+        autoTpFired: true,
+        runActive: false, // Prevent new trades after Auto-TP
+      };
     
     default:
       return state;
