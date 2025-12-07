@@ -11,6 +11,63 @@ export type PendingAction = 'activate' | 'hold' | 'takeProfit' | 'closeAll' | nu
 // Auto-TP mode types
 export type AutoTpMode = 'off' | 'percent' | 'cash' | 'infinite';
 
+// Duration and TP style types (used in mode config)
+export type DurationPreset = 'short' | 'medium' | 'long';
+export type TpStyle = 'fast' | 'scaled';
+
+// ============== Mode Presets ==============
+// Each mode has a distinct behavior profile applied when selected
+export interface ModePreset {
+  tradesPerRun: number;
+  maxConcurrentTrades: number;
+  durationPreset: DurationPreset;
+  tpStyle: TpStyle;
+  maxDrawdownPercent: number;
+  perTradeRiskPercent: number;
+  autoTpMode: AutoTpMode;
+  autoTpValue: number | null;
+  autoTpStopAfterHit: boolean;
+}
+
+export const MODE_PRESETS: Record<TradingMode, ModePreset> = {
+  // BURST: Ultra-aggressive, fast sessions
+  burst: {
+    tradesPerRun: 20,
+    maxConcurrentTrades: 15,
+    durationPreset: 'short',
+    tpStyle: 'fast',
+    maxDrawdownPercent: 8,
+    perTradeRiskPercent: 1.5,
+    autoTpMode: 'cash',
+    autoTpValue: 20,
+    autoTpStopAfterHit: false, // Continuous mode
+  },
+  // SCALPER: Medium-intensity intraday
+  scalper: {
+    tradesPerRun: 10,
+    maxConcurrentTrades: 8,
+    durationPreset: 'medium',
+    tpStyle: 'fast',
+    maxDrawdownPercent: 5,
+    perTradeRiskPercent: 1,
+    autoTpMode: 'percent',
+    autoTpValue: 0.75,
+    autoTpStopAfterHit: true, // One-shot runs
+  },
+  // TREND: Slow, swing-style
+  trend: {
+    tradesPerRun: 5,
+    maxConcurrentTrades: 3,
+    durationPreset: 'long',
+    tpStyle: 'scaled',
+    maxDrawdownPercent: 3,
+    perTradeRiskPercent: 0.5,
+    autoTpMode: 'percent',
+    autoTpValue: 2,
+    autoTpStopAfterHit: true, // One-shot runs
+  },
+};
+
 export interface SessionState {
   status: SessionStatus;
   mode: TradingMode;
