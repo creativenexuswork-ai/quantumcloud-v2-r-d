@@ -247,10 +247,6 @@ export function useSessionActions() {
       if (state.autoTpFired) return; // Already fired this run
       if (state.autoTpMode === 'off') return; // Auto-TP disabled
       
-      // For infinite mode, we use percent mode with default 1% target if no target set
-      const effectiveTpMode = state.autoTpMode === 'infinite' ? 'percent' : state.autoTpMode;
-      const effectiveTpValue = state.autoTpMode === 'infinite' ? (state.autoTpValue || 1) : state.autoTpValue;
-      
       // Check if Auto-TP target is set
       if (state.autoTpTargetEquity === null) return;
       
@@ -268,8 +264,8 @@ export function useSessionActions() {
       if (currentEquity >= targetEquity + buffer && stats.stats.openPositionsCount > 0) {
         const tpValue = state.autoTpValue;
         const tpMode = state.autoTpMode;
-        // Infinite mode ALWAYS auto-restarts (ignores stopAfterHit)
-        const stopAfterHit = tpMode === 'infinite' ? false : state.autoTpStopAfterHit;
+        // Use autoTpStopAfterHit to determine behavior
+        const stopAfterHit = state.autoTpStopAfterHit;
         
         console.log(`[AUTO-TP] Target hit: equity ${currentEquity.toFixed(2)} >= target ${targetEquity.toFixed(2)}. Mode: ${tpMode}, StopAfterHit: ${stopAfterHit}`);
         
@@ -304,23 +300,19 @@ export function useSessionActions() {
             description: `Target ${tpLabel} reached. Run banked – stopped.` 
           });
         } else {
-          // Infinite/continuous mode: Start a new run with fresh baseline
+          // Continuous mode: Start a new run with fresh baseline
           const newEquity = currentEquity; // Use current equity as new baseline
           const runId = `run_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
           
           // Calculate new target based on current mode and value
-          // For 'infinite' mode, use percent-based calculation with the stored value (default 1%)
           let newTargetEquity: number | null = null;
-          if ((tpMode === 'percent' || tpMode === 'infinite') && tpValue && tpValue > 0) {
+          if (tpMode === 'percent' && tpValue && tpValue > 0) {
             newTargetEquity = newEquity * (1 + tpValue / 100);
           } else if (tpMode === 'cash' && tpValue && tpValue > 0) {
             newTargetEquity = newEquity + tpValue;
-          } else if (tpMode === 'infinite') {
-            // Fallback: use 1% default for infinite mode if no value set
-            newTargetEquity = newEquity * 1.01;
           }
           
-          console.log(`[AUTO-TP INFINITE] Starting new run: id=${runId}, baseline=${newEquity.toFixed(2)}, target=${newTargetEquity?.toFixed(2) || 'none'}`);
+          console.log(`[AUTO-TP CONTINUOUS] Starting new run: id=${runId}, baseline=${newEquity.toFixed(2)}, target=${newTargetEquity?.toFixed(2) || 'none'}`);
           
           // Start new run
           dispatch({ 
@@ -415,13 +407,10 @@ export function useSessionActions() {
       
       // Calculate Auto-TP target based on mode
       let targetEquity: number | null = null;
-      if ((autoTpMode === 'percent' || autoTpMode === 'infinite') && autoTpValue && autoTpValue > 0) {
+      if (autoTpMode === 'percent' && autoTpValue && autoTpValue > 0) {
         targetEquity = currentEquity * (1 + autoTpValue / 100);
       } else if (autoTpMode === 'cash' && autoTpValue && autoTpValue > 0) {
         targetEquity = currentEquity + autoTpValue;
-      } else if (autoTpMode === 'infinite') {
-        // Fallback: use 1% default for infinite mode if no value set
-        targetEquity = currentEquity * 1.01;
       }
       // If mode is 'off' or value is invalid, targetEquity stays null (no Auto-TP)
       
@@ -653,7 +642,36 @@ export function useSessionActions() {
     
   }, [dispatch, runTick, queryClient, clearTickInterval, clearPnlRefresh, clearAutoTpCheck]);
 
-  // Change mode (only when idle or stopped)
+  // ================================================================
+  // MODE PRESETS - Applied when selecting a mode
+  // ================================================================
+  const MODE_PRESETS: Record<TradingMode, {
+    autoTpMode: 'off' | 'percent' | 'cash';
+    autoTpValue: number;
+    autoTpStopAfterHit: boolean;
+    description: string;
+  }> = {
+    burst: {
+      autoTpMode: 'percent',
+      autoTpValue: 1.5,
+      autoTpStopAfterHit: false, // Continuous mode for burst
+      description: 'Ultra-aggressive: continuous TP cycles at 1.5%',
+    },
+    scalper: {
+      autoTpMode: 'percent',
+      autoTpValue: 1,
+      autoTpStopAfterHit: true, // One-shot for scalper
+      description: 'Medium: one-shot TP at 1%',
+    },
+    trend: {
+      autoTpMode: 'percent',
+      autoTpValue: 2,
+      autoTpStopAfterHit: true, // One-shot for trend
+      description: 'Conservative: one-shot TP at 2%',
+    },
+  };
+
+  // Change mode (only when idle or stopped) - APPLIES PRESETS
   const changeMode = useCallback(async (newMode: TradingMode) => {
     const state = useSessionStore.getState();
     
@@ -668,6 +686,15 @@ export function useSessionActions() {
     
     dispatch({ type: 'SET_MODE', mode: newMode });
     
+    // Apply mode preset for Auto-TP settings
+    const preset = MODE_PRESETS[newMode];
+    if (preset) {
+      dispatch({ type: 'SET_AUTO_TP_MODE', mode: preset.autoTpMode });
+      dispatch({ type: 'SET_AUTO_TP_VALUE', value: preset.autoTpValue });
+      dispatch({ type: 'SET_AUTO_TP_STOP_AFTER_HIT', stopAfterHit: preset.autoTpStopAfterHit });
+      console.log(`[MODE PRESET] Applied ${newMode}: ${preset.description}`);
+    }
+    
     // Persist to backend
     const { data: { user } } = await supabase.auth.getUser();
     if (user) {
@@ -680,14 +707,16 @@ export function useSessionActions() {
           modeSettings: {},
         },
         // CRITICAL: Set burst_requested flag when burst mode is selected
-        // This flag is required by the backend for burst mode to open trades
         burst_requested: isBurstMode,
       } as any).eq('user_id', user.id);
       
       console.log(`[MODE] Changed to ${newMode}, burst_requested=${isBurstMode}`);
     }
     
-    toast({ title: 'Mode Changed', description: `Switched to ${newMode.toUpperCase()} mode` });
+    toast({ 
+      title: 'Mode Changed', 
+      description: `${newMode.toUpperCase()}: ${preset?.description || 'Active'}` 
+    });
   }, [dispatch]);
 
   // Reset session (clear halted state, reset to idle)
