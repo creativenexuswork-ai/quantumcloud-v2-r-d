@@ -59,11 +59,41 @@ export function runTradingTick(input: RunTickInput): EngineState {
     edges[symbol] = calculateEdge(symbol, tick, environments[symbol], latestTicks);
   }
   
+  // Log environment summaries (only log first 3 symbols to avoid spam)
+  const symbolsToLog = Object.keys(environments).slice(0, 3);
+  for (const symbol of symbolsToLog) {
+    const env = environments[symbol];
+    const edge = edges[symbol];
+    logs.push({
+      level: 'info',
+      source: 'environment',
+      message: `[${symbol}] ${env.marketState}/${env.volState} conf=${(env.environmentConfidence * 100).toFixed(0)}% | Edge: ${edge.edgeDirection} score=${edge.edgeScore.toFixed(0)} conf=${(edge.edgeConfidence * 100).toFixed(0)}%`,
+      meta: { symbol, env, edge },
+      createdAt: now
+    });
+  }
+  
   // Step 2: Update thermostat based on recent performance
   thermostatState = updateThermostat(recentTrades, environments);
   
+  logs.push({
+    level: 'info',
+    source: 'thermostat',
+    message: `Thermostat: ${thermostatState.aggressionLevel} | ${thermostatState.streakType} streak (${thermostatState.streakLength}) | WR=${thermostatState.recentWinRate.toFixed(0)}% | ${thermostatState.adjustmentReason}`,
+    meta: { thermostatState },
+    createdAt: now
+  });
+  
   // Step 3: Analyze session
   const sessionAnalysis = analyzeSession();
+  
+  logs.push({
+    level: 'info',
+    source: 'session',
+    message: `Session: ${sessionAnalysis.session.name} (${sessionAnalysis.session.phase}) | vol=${sessionAnalysis.session.volatilityExpected} | quality=${(sessionAnalysis.session.quality * 100).toFixed(0)}%`,
+    meta: { sessionAnalysis },
+    createdAt: now
+  });
   
   // Step 4: Route markets and rank by tradeability
   const routerResult = routeMarkets(
@@ -73,6 +103,16 @@ export function runTradingTick(input: RunTickInput): EngineState {
     edges,
     5 // Max primary candidates
   );
+  
+  if (routerResult.primaryCandidates.length > 0) {
+    logs.push({
+      level: 'info',
+      source: 'router',
+      message: `Primary markets: ${routerResult.primaryCandidates.join(', ')} | Top score: ${routerResult.rankings[0]?.score || 0}`,
+      meta: { primaryCandidates: routerResult.primaryCandidates, topRankings: routerResult.rankings.slice(0, 3) },
+      createdAt: now
+    });
+  }
   
   // Step 5: Mark positions to market
   let positions = markToMarket(inputPositions, latestTicks);
