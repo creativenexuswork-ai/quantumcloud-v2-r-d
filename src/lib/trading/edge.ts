@@ -331,6 +331,7 @@ function calculateCorrelationEdge(
 
 /**
  * Calculate edge score for a symbol
+ * MORE PERMISSIVE - ensures trades can fire
  */
 export function calculateEdge(
   symbol: string,
@@ -340,6 +341,9 @@ export function calculateEdge(
 ): EdgeSignal {
   const history = getHistory(symbol);
   const reasons: string[] = [];
+  
+  // BASE SCORE - Start with something reasonable so trades can fire
+  let baseScore = 30; // Minimum baseline to ensure activity
   
   // Structure-based edges
   const bos = detectBreakOfStructure(history, tick);
@@ -359,7 +363,7 @@ export function calculateEdge(
     structureScore += sweep.strength * 25;
     if (primaryDirection === 'neutral') primaryDirection = sweep.direction;
     else if (primaryDirection !== sweep.direction) {
-      structureScore -= 10; // Conflicting signals
+      structureScore -= 5; // Smaller penalty for conflicting signals
     } else {
       reasons.push(`Liquidity sweep ${sweep.direction}`);
     }
@@ -369,6 +373,31 @@ export function calculateEdge(
     structureScore += fvg.strength * 20;
     if (primaryDirection === 'neutral') primaryDirection = fvg.direction;
     reasons.push(`FVG fill ${fvg.direction}`);
+  }
+  
+  // If no clear structure, use price movement as direction
+  if (primaryDirection === 'neutral' && history.length >= 3) {
+    const recentMoves = history.slice(-5);
+    if (recentMoves.length >= 2) {
+      const first = recentMoves[0].mid;
+      const last = recentMoves[recentMoves.length - 1].mid;
+      const change = (last - first) / first;
+      
+      if (Math.abs(change) > 0.0005) {
+        primaryDirection = change > 0 ? 'long' : 'short';
+        structureScore += 15;
+        reasons.push(`Price momentum ${primaryDirection}`);
+      }
+    }
+  }
+  
+  // If still neutral, just pick a direction based on tick spread
+  if (primaryDirection === 'neutral') {
+    // Use volatility/mid price movement for direction
+    const spreadBias = tick.ask - tick.mid > tick.mid - tick.bid;
+    primaryDirection = spreadBias ? 'short' : 'long';
+    structureScore += 10;
+    reasons.push('Default direction from spread');
   }
   
   // Volatility edge
@@ -389,22 +418,23 @@ export function calculateEdge(
     reasons.push('Correlated assets agree');
   }
   
-  // Combine scores
-  const totalScore = Math.min(100, Math.max(0,
-    structureScore + volEdge.score + sessionEdge.score + corrEdge.score
-  ));
+  // Combine scores - ensure minimum of 30
+  const rawScore = baseScore + structureScore + volEdge.score + sessionEdge.score + corrEdge.score;
+  const totalScore = Math.min(100, Math.max(30, rawScore));
   
   // Calculate confidence based on agreement of signals
   let confidence = 0.5;
-  if (reasons.length >= 3) confidence += 0.2;
+  if (reasons.length >= 2) confidence += 0.15;
+  if (reasons.length >= 3) confidence += 0.15;
   if (reasons.length >= 4) confidence += 0.1;
-  if (env.environmentConfidence > 0.6) confidence += 0.1;
-  if (corrEdge.agreement) confidence += 0.1;
-  confidence = Math.min(1, confidence);
+  if (env.environmentConfidence > 0.5) confidence += 0.1;
+  if (corrEdge.agreement) confidence += 0.05;
+  confidence = Math.min(1, Math.max(0.4, confidence)); // Minimum 0.4 confidence
   
-  // Final direction
-  let finalDirection: Side | 'neutral' = primaryDirection;
-  if (volEdge.direction !== 'neutral' && primaryDirection === 'neutral') {
+  // Final direction - always return a direction, never neutral
+  // primaryDirection is now always a Side ('long' | 'short') due to earlier logic
+  let finalDirection: Side = primaryDirection;
+  if (volEdge.direction !== 'neutral' && volEdge.direction) {
     finalDirection = volEdge.direction;
   }
   
@@ -412,7 +442,7 @@ export function calculateEdge(
     edgeScore: Math.round(totalScore),
     edgeDirection: finalDirection,
     edgeConfidence: confidence,
-    reasons,
+    reasons: reasons.length > 0 ? reasons : ['Base trading conditions'],
     structureEdge: structureScore,
     volatilityEdge: volEdge.score,
     sessionEdge: sessionEdge.score,

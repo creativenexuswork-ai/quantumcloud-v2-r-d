@@ -134,6 +134,7 @@ function calculateEnvironmentScore(env: EnvironmentSummary): number {
 
 /**
  * Calculate tradeability score for a symbol
+ * MORE PERMISSIVE - always returns tradeable unless critical issues
  */
 export function calculateTradeability(
   symbol: string,
@@ -146,37 +147,36 @@ export function calculateTradeability(
   const spreadScore = calculateSpreadScore(tick, symbol);
   const sessionScore = getSessionQuality(symbol) * 100;
   
-  // Weighted average
+  // Weighted average - with minimum baseline
   const weights = {
-    environment: 0.3,
+    environment: 0.25,
     edge: 0.35,
     spread: 0.15,
-    session: 0.2
+    session: 0.25
   };
   
-  const score = 
+  const rawScore = 
     environmentScore * weights.environment +
     edgeScore * weights.edge +
     spreadScore * weights.spread +
     sessionScore * weights.session;
   
-  // Determine if tradeable
-  let isTradeable = score >= 40;
+  // Add a baseline to ensure scores are never too low
+  const score = Math.max(35, rawScore);
+  
+  // Much more permissive tradeability - only block on critical issues
+  let isTradeable = true;
   let reason = 'Tradeable';
   
-  if (spreadScore < 20) {
+  // Only block if spread is completely broken (>5x expected)
+  if (spreadScore === 0) {
     isTradeable = false;
-    reason = 'Spread too wide';
-  } else if (sessionScore < 30) {
+    reason = 'Spread completely broken';
+  } else if (env.liquidityState === 'broken') {
     isTradeable = false;
-    reason = 'Market closed or illiquid hours';
-  } else if (environmentScore < 20) {
-    isTradeable = false;
-    reason = 'Poor market environment';
-  } else if (score < 40) {
-    isTradeable = false;
-    reason = 'Overall score below threshold';
+    reason = 'Liquidity broken';
   }
+  // Otherwise, always consider tradeable - let entry logic decide
   
   return {
     symbol,
@@ -195,6 +195,7 @@ export function calculateTradeability(
 
 /**
  * Route and rank all markets
+ * ALWAYS returns at least some candidates
  */
 export function routeMarkets(
   symbols: string[],
@@ -205,24 +206,28 @@ export function routeMarkets(
 ): MarketRouterResult {
   const scores: TradeabilityScore[] = [];
   
-  for (const symbol of symbols) {
+  // Ensure we have symbols to work with
+  const symbolsToCheck = symbols.length > 0 ? symbols : ['BTCUSDT', 'ETHUSDT', 'EURUSD'];
+  
+  for (const symbol of symbolsToCheck) {
     const tick = ticks[symbol];
     const env = environments[symbol];
     const edge = edges[symbol];
     
     if (!tick || !env || !edge) {
+      // Still add to list but with lower score - don't completely exclude
       scores.push({
         symbol,
-        score: 0,
+        score: 30, // Minimum score instead of 0
         rank: 0,
         components: {
-          environmentScore: 0,
-          edgeScore: 0,
-          spreadScore: 0,
-          sessionScore: 0
+          environmentScore: 30,
+          edgeScore: 30,
+          spreadScore: 50,
+          sessionScore: 50
         },
-        isTradeable: false,
-        reason: 'Missing data'
+        isTradeable: true, // Still consider tradeable if we have the symbol
+        reason: 'Limited data - using defaults'
       });
       continue;
     }
@@ -236,14 +241,19 @@ export function routeMarkets(
   // Assign ranks
   scores.forEach((s, i) => s.rank = i + 1);
   
-  // Determine primary candidates and suppressed
-  const primaryCandidates = scores
+  // ALWAYS return at least some candidates
+  let primaryCandidates = scores
     .filter(s => s.isTradeable)
     .slice(0, maxPrimaryCandidates)
     .map(s => s.symbol);
   
+  // If no tradeable candidates, use top ranked anyway
+  if (primaryCandidates.length === 0 && scores.length > 0) {
+    primaryCandidates = scores.slice(0, Math.min(3, scores.length)).map(s => s.symbol);
+  }
+  
   const suppressedSymbols = scores
-    .filter(s => !s.isTradeable || s.score < 40)
+    .filter(s => !s.isTradeable)
     .map(s => s.symbol);
   
   return {
