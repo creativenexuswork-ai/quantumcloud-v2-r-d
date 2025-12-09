@@ -27,31 +27,31 @@ export interface ModeThresholds {
   maxConcurrentPerMode: number;
 }
 
-// Mode personality configurations
+// Mode personality configurations - MORE PERMISSIVE thresholds
 const MODE_CONFIGS: Record<ModePersonality, ModeThresholds> = {
   burst: {
-    minEdgeScore: 55,
-    minConfidence: 0.5,
-    minEnvConfidence: 0.4,
-    allowedMarketStates: ['trend_clean', 'trend_messy', 'range_tradeable'],
-    allowedVolStates: ['expansion', 'compression'],
-    maxConcurrentPerMode: 5
+    minEdgeScore: 25, // Very low - burst should trade frequently
+    minConfidence: 0.3,
+    minEnvConfidence: 0.25,
+    allowedMarketStates: ['trend_clean', 'trend_messy', 'range_tradeable', 'compression', 'expansion'],
+    allowedVolStates: ['expansion', 'compression', 'normal', 'exhaustion', 'spike'],
+    maxConcurrentPerMode: 10
   },
   scalper: {
-    minEdgeScore: 60,
-    minConfidence: 0.55,
-    minEnvConfidence: 0.45,
-    allowedMarketStates: ['trend_clean', 'range_tradeable'],
-    allowedVolStates: ['compression', 'expansion', 'exhaustion'],
-    maxConcurrentPerMode: 4
+    minEdgeScore: 35, // Medium threshold
+    minConfidence: 0.35,
+    minEnvConfidence: 0.3,
+    allowedMarketStates: ['trend_clean', 'trend_messy', 'range_tradeable'],
+    allowedVolStates: ['compression', 'expansion', 'exhaustion', 'normal'],
+    maxConcurrentPerMode: 8
   },
   trend: {
-    minEdgeScore: 70,
-    minConfidence: 0.65,
-    minEnvConfidence: 0.55,
-    allowedMarketStates: ['trend_clean', 'trend_messy'],
-    allowedVolStates: ['expansion', 'compression'],
-    maxConcurrentPerMode: 3
+    minEdgeScore: 45, // Higher but still reasonable
+    minConfidence: 0.4,
+    minEnvConfidence: 0.35,
+    allowedMarketStates: ['trend_clean', 'trend_messy', 'range_tradeable'],
+    allowedVolStates: ['expansion', 'compression', 'normal'],
+    maxConcurrentPerMode: 5
   }
 };
 

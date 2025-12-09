@@ -21,12 +21,12 @@ const DEFAULT_BURST_CONFIG = {
 };
 
 const DEFAULT_MODE_CONFIG = {
-  enabledModes: ['sniper', 'trend'],
+  enabledModes: ['burst', 'trend', 'scalper'], // Include all main modes by default
   modeSettings: {},
 };
 
 const DEFAULT_MARKET_CONFIG = {
-  selectedSymbols: ['BTCUSDT', 'ETHUSDT'],
+  selectedSymbols: ['BTCUSDT', 'ETHUSDT', 'EURUSD', 'XAUUSD'], // More symbols for trading
   typeFilters: { crypto: true, forex: true, index: true, metal: true },
 };
 
@@ -144,24 +144,35 @@ const MODE_MANAGEMENT_CONFIG: Record<string, ModeManagementConfig> = {
 // ============== Helper Functions ==============
 
 function detectTrend(tick: PriceTick): 'up' | 'down' | 'neutral' {
-  if (tick.regime === 'low_vol') return 'neutral';
+  // Always return a direction - don't block on regime
   const vol = tick.volatility ?? 0.5;
-  // Use volatility combined with randomness for realistic signal variation
-  const bias = (Math.random() - 0.5) * 0.4;
-  return (vol + bias) > 0.5 ? 'up' : 'down';
+  // Use price movement + randomness for direction
+  const bias = (Math.random() - 0.5) * 0.6;
+  const signal = vol + bias;
+  // Bias slightly towards trends
+  return signal > 0.45 ? 'up' : 'down';
 }
 
 function calculateSignalStrength(tick: PriceTick): number {
-  // Signal strength based on volatility and regime
-  let strength = 0.5;
-  if (tick.regime === 'trend') strength += 0.2;
-  if (tick.regime === 'high_vol') strength += 0.1;
-  if (tick.volatility && tick.volatility > 0.6) strength += 0.1;
-  return Math.min(1, strength + (Math.random() * 0.2 - 0.1));
+  // Base strength is now higher to ensure trades fire
+  let strength = 0.45; // Higher base
+  
+  // Add bonuses based on conditions
+  if (tick.regime === 'trend') strength += 0.25;
+  else if (tick.regime === 'high_vol') strength += 0.15;
+  else strength += 0.1; // Even low_vol gets a small bonus
+  
+  if (tick.volatility && tick.volatility > 0.5) strength += 0.1;
+  if (tick.volatility && tick.volatility > 0.7) strength += 0.1;
+  
+  // Small random variation
+  const variation = (Math.random() * 0.15 - 0.05);
+  
+  return Math.min(1, Math.max(0.3, strength + variation));
 }
 
 function calculateSize(equity: number, riskPercent: number, price: number, slDistance: number): number {
-  if (slDistance === 0) return 0;
+  if (slDistance === 0 || price === 0) return 0.001;
   const riskAmount = equity * (riskPercent / 100);
   return Math.max(0.001, riskAmount / slDistance);
 }
@@ -239,29 +250,41 @@ function evaluatePosition(
 // ============== Trading Mode Logic ==============
 
 function runBurstMode(ctx: EngineContext): ProposedOrder[] {
-  // Burst mode runs if explicitly requested OR if burst is in the enabled modes list
-  // This allows burst to work both via burst_requested flag AND via mode selection
+  // Burst mode - most permissive, should trade frequently
   const config = MODE_MANAGEMENT_CONFIG.burst;
   const currentBurstPositions = ctx.openPositions.filter(p => p.mode === 'burst').length;
   
   // Don't exceed max concurrent for burst
   if (currentBurstPositions >= config.maxConcurrent) return [];
   
-  // Signal-based entry - only enter on strong signals
-  const signalThreshold = 0.55;
+  // BURST: Very permissive - low threshold to ensure trades fire
+  const signalThreshold = 0.3; // Lower threshold for burst mode
   const orders: ProposedOrder[] = [];
   const availableSlots = Math.min(config.perTickOpen, config.maxConcurrent - currentBurstPositions);
   
   if (availableSlots <= 0) return [];
   
-  // Find best opportunities
+  // Get symbols - fallback to defaults if empty
+  let symbols = ctx.selectedSymbols;
+  if (!symbols || symbols.length === 0) {
+    symbols = ['BTCUSDT', 'ETHUSDT', 'EURUSD'];
+    console.log('[BURST] No symbols configured, using defaults:', symbols);
+  }
+  
+  // Find best opportunities - NO random gate for burst, it should trade!
   const opportunities: { symbol: string; tick: PriceTick; strength: number }[] = [];
   
-  for (const symbol of ctx.selectedSymbols) {
+  for (const symbol of symbols) {
     const tick = ctx.ticks[symbol];
-    if (!tick) continue;
+    if (!tick) {
+      console.log(`[BURST] No tick for ${symbol}`);
+      continue;
+    }
     
     const strength = calculateSignalStrength(tick);
+    console.log(`[BURST] ${symbol} signal strength: ${strength.toFixed(2)}, threshold: ${signalThreshold}`);
+    
+    // Lower threshold for burst
     if (strength >= signalThreshold) {
       opportunities.push({ symbol, tick, strength });
     }
@@ -270,7 +293,9 @@ function runBurstMode(ctx: EngineContext): ProposedOrder[] {
   // Sort by signal strength
   opportunities.sort((a, b) => b.strength - a.strength);
   
-  const riskPerTrade = (ctx.burstConfig?.riskPerBurstPercent ?? 2) / config.maxConcurrent;
+  console.log(`[BURST] ${opportunities.length} opportunities found from ${symbols.length} symbols`);
+  
+  const riskPerTrade = (ctx.burstConfig?.riskPerBurstPercent ?? 2) / Math.max(1, config.maxConcurrent);
   const batchId = generateBatchId();
   
   for (let i = 0; i < Math.min(availableSlots, opportunities.length); i++) {
@@ -292,6 +317,8 @@ function runBurstMode(ctx: EngineContext): ProposedOrder[] {
       confidence: opportunities[i].strength,
       batchId
     });
+    
+    console.log(`[BURST] Created order: ${symbol} ${side} size=${size.toFixed(4)}`);
   }
   
   return orders;
@@ -303,20 +330,23 @@ function runScalperMode(ctx: EngineContext): ProposedOrder[] {
   
   if (currentPositions >= config.maxConcurrent) return [];
   
-  // Scalper needs strong signal alignment
-  const signalThreshold = 0.6;
+  // Scalper - medium threshold
+  const signalThreshold = 0.4; // More permissive threshold
   const orders: ProposedOrder[] = [];
   const availableSlots = Math.min(config.perTickOpen, config.maxConcurrent - currentPositions);
   
-  // Only trade on ~40% of ticks - be selective
-  if (Math.random() > 0.4) return [];
+  // Get symbols - fallback to defaults if empty
+  let symbols = ctx.selectedSymbols;
+  if (!symbols || symbols.length === 0) {
+    symbols = ['BTCUSDT', 'ETHUSDT', 'EURUSD'];
+  }
   
-  for (const symbol of ctx.selectedSymbols) {
+  // REMOVED random gate - scalper should evaluate every tick
+  for (const symbol of symbols) {
     if (orders.length >= availableSlots) break;
     
     const tick = ctx.ticks[symbol];
     if (!tick) continue;
-    if (tick.regime === 'low_vol') continue; // Need volatility for scalping
     
     const strength = calculateSignalStrength(tick);
     if (strength < signalThreshold) continue;
@@ -325,7 +355,7 @@ function runScalperMode(ctx: EngineContext): ProposedOrder[] {
     if (trend === 'neutral') continue;
     
     const side: Side = trend === 'up' ? 'long' : 'short';
-    const riskPct = ctx.modeSettings?.scalper?.riskPerTrade ?? 0.3;
+    const riskPct = ctx.modeSettings?.scalper?.riskPerTrade ?? 0.5;
     const slDistance = tick.mid * 0.003; // Very tight SL
     const tpDistance = tick.mid * 0.005;
     const size = calculateSize(ctx.equity, riskPct, tick.mid, slDistance);
@@ -336,9 +366,11 @@ function runScalperMode(ctx: EngineContext): ProposedOrder[] {
       sl: side === 'long' ? tick.mid - slDistance : tick.mid + slDistance,
       tp: side === 'long' ? tick.mid + tpDistance : tick.mid - tpDistance,
       mode: 'scalper',
-      reason: `Scalper entry on ${tick.regime}`,
+      reason: `Scalper entry (signal: ${strength.toFixed(2)})`,
       confidence: strength
     });
+    
+    console.log(`[SCALPER] Created order: ${symbol} ${side} signal=${strength.toFixed(2)}`);
   }
   
   return orders;
@@ -350,26 +382,26 @@ function runTrendMode(ctx: EngineContext): ProposedOrder[] {
   
   if (currentPositions >= config.maxConcurrent) return [];
   
-  // Trend mode is patient - only trade on ~25% of ticks
-  if (Math.random() > 0.25) return [];
-  
-  // Need strong trend confirmation
-  const signalThreshold = 0.65;
+  // Trend - higher threshold but no random gate
+  const signalThreshold = 0.5;
   const orders: ProposedOrder[] = [];
   const availableSlots = Math.min(config.perTickOpen, config.maxConcurrent - currentPositions);
   
-  for (const symbol of ctx.selectedSymbols) {
+  // Get symbols - fallback to defaults if empty
+  let symbols = ctx.selectedSymbols;
+  if (!symbols || symbols.length === 0) {
+    symbols = ['BTCUSDT', 'ETHUSDT', 'EURUSD'];
+  }
+  
+  // REMOVED random gate - trend evaluates every tick but is more selective
+  for (const symbol of symbols) {
     if (orders.length >= availableSlots) break;
     
     const tick = ctx.ticks[symbol];
     if (!tick) continue;
-    if (tick.regime === 'low_vol') continue; // Need trend regime
     
     const strength = calculateSignalStrength(tick);
     if (strength < signalThreshold) continue;
-    
-    // Trend mode specifically requires trend regime
-    if (tick.regime !== 'trend' && Math.random() > 0.3) continue;
     
     const trend = detectTrend(tick);
     if (trend === 'neutral') continue;
@@ -386,9 +418,11 @@ function runTrendMode(ctx: EngineContext): ProposedOrder[] {
       sl: side === 'long' ? tick.mid - slDistance : tick.mid + slDistance,
       tp: side === 'long' ? tick.mid + tpDistance : tick.mid - tpDistance,
       mode: 'trend',
-      reason: `Trend entry on ${tick.regime} (strength: ${strength.toFixed(2)})`,
+      reason: `Trend entry (signal: ${strength.toFixed(2)})`,
       confidence: strength
     });
+    
+    console.log(`[TREND] Created order: ${symbol} ${side} signal=${strength.toFixed(2)}`);
   }
   
   return orders;
@@ -1084,8 +1118,20 @@ serve(async (req) => {
       console.log(`[ENGINE] risk=${currentRiskExposure.toFixed(2)}%, capacity=${remainingRiskCapacity.toFixed(2)}%, slots=${availableSlots}`);
 
       if (remainingRiskCapacity > 0 && availableSlots > 0) {
+        // Ensure we always have symbols to trade
+        let symbolsToTrade = marketConfig.selectedSymbols || [];
+        if (!symbolsToTrade || symbolsToTrade.length === 0) {
+          symbolsToTrade = DEFAULT_MARKET_CONFIG.selectedSymbols;
+          console.log('[ENGINE] No symbols in config, using defaults:', symbolsToTrade);
+        }
+        
+        // Log available ticks
+        const availableTicks = Object.keys(ticks);
+        console.log(`[ENGINE] Available ticks: ${availableTicks.join(', ')}`);
+        console.log(`[ENGINE] Symbols to trade: ${symbolsToTrade.join(', ')}`);
+        
         const ctx: EngineContext = {
-          selectedSymbols: marketConfig.selectedSymbols || [],
+          selectedSymbols: symbolsToTrade,
           ticks,
           equity: startingEquity + finalTodayPnl,
           winRate: finalWinRate,
@@ -1103,7 +1149,15 @@ serve(async (req) => {
         const burstPnlPercent = startingEquity > 0 ? (burstPnl / startingEquity) * 100 : 0;
         const burstLocked = burstPnlPercent >= burstConfig.dailyProfitTargetPercent;
 
-        const modesToRun = new Set<TradingMode>(modeConfig.enabledModes as TradingMode[] || []);
+        // Get enabled modes - ensure we always have at least one mode
+        let enabledModes = modeConfig.enabledModes as TradingMode[] || [];
+        if (!enabledModes || enabledModes.length === 0) {
+          enabledModes = ['burst', 'trend', 'scalper'];
+          console.log('[ENGINE] No modes enabled, using defaults:', enabledModes);
+        }
+        
+        const modesToRun = new Set<TradingMode>(enabledModes);
+        console.log(`[ENGINE] Modes to run: ${[...modesToRun].join(', ')}`);
         
         // Also add burst if explicitly requested (for backward compatibility)
         if (config.burst_requested && !burstLocked) {
