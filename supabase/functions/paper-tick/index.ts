@@ -816,33 +816,38 @@ serve(async (req) => {
     }
 
     // Fetch latest prices with error handling
-    let ticks: Record<string, PriceTick> = {};
+    let ticks: Record<string, PriceTick> | null = null;
+    let priceFeedRaw: unknown = null;
+    
     try {
       const priceResponse = await fetch(`${supabaseUrl}/functions/v1/price-feed`, {
         headers: { Authorization: `Bearer ${supabaseKey}` },
       });
-      const priceData = await priceResponse.json();
+      priceFeedRaw = await priceResponse.json();
       
-      if (priceData && priceData.ticks && typeof priceData.ticks === 'object') {
-        ticks = priceData.ticks;
-      } else {
-        console.warn('[PAPER_TICK] No ticks data from price-feed, raw:', JSON.stringify(priceData).slice(0, 200));
+      if (priceFeedRaw && typeof priceFeedRaw === 'object' && 'ticks' in priceFeedRaw) {
+        const rawTicks = (priceFeedRaw as { ticks: unknown }).ticks;
+        if (rawTicks && typeof rawTicks === 'object' && !Array.isArray(rawTicks)) {
+          ticks = rawTicks as Record<string, PriceTick>;
+        }
       }
     } catch (priceFetchError) {
       console.error('[PAPER_TICK] Failed to fetch prices:', priceFetchError);
     }
     
-    // Guard: if no market data available
-    const availableSymbols = Object.keys(ticks);
-    if (availableSymbols.length === 0) {
-      console.warn('[PAPER_TICK] No market data available');
+    // ================================================================
+    // HARD GUARD: Validate ticks shape
+    // ================================================================
+    if (ticks === undefined || ticks === null || typeof ticks !== 'object' || Object.keys(ticks).length === 0) {
+      console.warn('[PAPER_TICK] NO_TICK_DATA - ticks invalid or empty');
       return new Response(JSON.stringify({
         ok: false,
-        reason: 'NO_MARKET_DATA',
-        message: 'Live market data unavailable. Check price-feed status.',
-      }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+        error: 'NO_TICK_DATA',
+        details: priceFeedRaw ?? null,
+      }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
     
+    const availableSymbols = Object.keys(ticks);
     console.log(`[PAPER_TICK] Got ${availableSymbols.length} symbols: ${availableSymbols.slice(0, 5).join(', ')}...`);
 
     // ================================================================
@@ -1128,19 +1133,27 @@ serve(async (req) => {
         symbolsToTrade = DEFAULT_MARKET_CONFIG.selectedSymbols;
       }
       
-      // Filter to only symbols with available tick data
-      const symbolsWithData = symbolsToTrade.filter((s: string) => ticks[s] && ticks[s].mid > 0);
-      if (symbolsWithData.length === 0) {
-        console.warn(`[ENGINE] No tick data available for configured symbols: ${symbolsToTrade.join(', ')}`);
-        console.warn(`[ENGINE] Available ticks: ${Object.keys(ticks).join(', ')}`);
+      // ================================================================
+      // VALIDATE SYMBOLS AGAINST RETURNED TICKS
+      // ================================================================
+      const validSymbols = symbolsToTrade.filter((s: string) => {
+        const v = ticks?.[s];
+        return v !== undefined && v !== null && typeof v === 'object' && v.mid > 0;
+      });
+      
+      if (validSymbols.length === 0) {
+        console.warn(`[ENGINE] NO_VALID_SYMBOLS - requested: ${symbolsToTrade.join(', ')}`);
+        console.warn(`[ENGINE] Available ticks: ${Object.keys(ticks || {}).join(', ')}`);
         return new Response(JSON.stringify({
           ok: false,
-          reason: 'NO_SYMBOL_DATA',
-          configuredSymbols: symbolsToTrade,
-          availableSymbols: Object.keys(ticks),
-          message: 'None of the configured symbols have live price data',
-        }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+          error: 'NO_VALID_SYMBOLS',
+          requested: symbolsToTrade,
+          available: Object.keys(ticks || {}),
+        }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
       }
+      
+      // Use validSymbols instead of symbolsWithData
+      const symbolsWithData = validSymbols;
       
       // Determine selected mode
       let enabledModes = modeConfig.enabledModes as TradingModeKey[] || ['scalper'];
@@ -1278,16 +1291,19 @@ serve(async (req) => {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });
   } catch (error) {
-    console.error('Paper tick runtime error:', error);
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    const errorStack = error instanceof Error ? error.stack : undefined;
+    // ================================================================
+    // UNCAUGHT EXCEPTION HANDLER - Never return 500
+    // ================================================================
+    console.error('[PAPER_TICK] UNCAUGHT_EXCEPTION:', error);
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    const errorStack = error instanceof Error ? error.stack : null;
     return new Response(JSON.stringify({ 
       ok: false,
-      reason: 'RUNTIME_ERROR',
+      error: 'UNCAUGHT_EXCEPTION',
       message: errorMessage,
       stack: errorStack,
     }), {
-      status: 200, // Always return 200 to avoid 500 errors
+      status: 200,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });
   }
