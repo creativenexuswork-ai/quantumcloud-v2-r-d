@@ -1,1 +1,10 @@
 project_id = "gpedablftywmazegjojs"
+
+[functions.paper-tick]
+verify_jwt = false
+
+[functions.paper-stats]
+verify_jwt = false
+
+[functions.price-feed]
+verify_jwt = false
