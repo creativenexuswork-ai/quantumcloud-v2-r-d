@@ -129,7 +129,18 @@ function isMarketOpen(marketType: MarketType): boolean {
   return true;
 }
 
-// ============= FINNHUB API (PRIMARY) =============
+// ============= FINNHUB QUOTE API (PRIMARY - FREE TIER) =============
+interface FinnhubQuote {
+  c: number;  // Current price
+  d: number;  // Change
+  dp: number; // Percent change
+  h: number;  // High price of the day
+  l: number;  // Low price of the day
+  o: number;  // Open price of the day
+  pc: number; // Previous close price
+  t: number;  // Timestamp
+}
+
 async function fetchFromFinnhub(
   symbol: string, 
   marketType: MarketType, 
@@ -141,37 +152,34 @@ async function fetchFromFinnhub(
     return null;
   }
   
-  const resolution = TIMEFRAME_MAP[timeframe] || '1';
-  const now = Math.floor(Date.now() / 1000);
-  const from = now - (60 * 60 * 24); // Last 24 hours
-  
-  let endpoint: string;
-  let finnhubSymbol = symbol;
-  
   try {
     // Normalize symbol - remove slashes for API calls
     const baseSymbol = symbol.replace('/', '');
+    let endpoint: string;
+    let finnhubSymbol: string;
     
     switch (marketType) {
       case 'crypto':
-        // Finnhub crypto uses BINANCE: prefix, format: BTCUSDT
+        // Finnhub crypto quote uses BINANCE: prefix
         const cryptoBase = baseSymbol.replace('USD', '');
         finnhubSymbol = `BINANCE:${cryptoBase}USDT`;
-        endpoint = `https://finnhub.io/api/v1/crypto/candle?symbol=${finnhubSymbol}&resolution=${resolution}&from=${from}&to=${now}&token=${apiKey}`;
+        endpoint = `https://finnhub.io/api/v1/quote?symbol=${finnhubSymbol}&token=${apiKey}`;
         break;
       case 'forex':
-        // Finnhub forex uses OANDA: prefix, format: EUR_USD
+        // Finnhub forex quote uses OANDA: prefix
         const fxBase = baseSymbol.slice(0, 3);
         const fxQuote = baseSymbol.slice(3);
         finnhubSymbol = `OANDA:${fxBase}_${fxQuote}`;
-        endpoint = `https://finnhub.io/api/v1/forex/candle?symbol=${finnhubSymbol}&resolution=${resolution}&from=${from}&to=${now}&token=${apiKey}`;
+        endpoint = `https://finnhub.io/api/v1/quote?symbol=${finnhubSymbol}&token=${apiKey}`;
         break;
       case 'stock':
-        endpoint = `https://finnhub.io/api/v1/stock/candle?symbol=${baseSymbol}&resolution=${resolution}&from=${from}&to=${now}&token=${apiKey}`;
+        // Stock quotes use ticker directly
+        finnhubSymbol = baseSymbol;
+        endpoint = `https://finnhub.io/api/v1/quote?symbol=${finnhubSymbol}&token=${apiKey}`;
         break;
     }
     
-    console.log(`[FINNHUB] Fetching ${symbol} (${finnhubSymbol}) at ${timeframe}`);
+    console.log(`[FINNHUB] Fetching quote for ${symbol} (${finnhubSymbol})`);
     
     const response = await fetch(endpoint);
     if (!response.ok) {
@@ -179,28 +187,27 @@ async function fetchFromFinnhub(
       return null;
     }
     
-    const data = await response.json();
+    const data: FinnhubQuote = await response.json();
     
-    // Finnhub returns {s: "ok", c: [], o: [], h: [], l: [], v: [], t: []}
-    if (data.s !== 'ok' || !data.c || data.c.length === 0) {
-      console.error(`[FINNHUB] No data for ${symbol}: ${JSON.stringify(data)}`);
+    // Finnhub returns {c: 0, d: 0, dp: 0, h: 0, l: 0, o: 0, pc: 0, t: 0} when no data
+    if (!data.c || data.c === 0) {
+      console.error(`[FINNHUB] No quote data for ${symbol}: ${JSON.stringify(data)}`);
       return null;
     }
     
-    const candles: OHLCV[] = [];
-    for (let i = 0; i < data.t.length; i++) {
-      candles.push({
-        time: data.t[i] * 1000,
-        open: data.o[i],
-        high: data.h[i],
-        low: data.l[i],
-        close: data.c[i],
-        volume: data.v[i] || 0,
-      });
-    }
+    console.log(`[FINNHUB] Got quote for ${symbol}: price=${data.c}, high=${data.h}, low=${data.l}`);
     
-    console.log(`[FINNHUB] Got ${candles.length} candles for ${symbol}`);
-    return candles;
+    // Convert quote to single OHLCV candle for compatibility
+    const candle: OHLCV = {
+      time: data.t ? data.t * 1000 : Date.now(),
+      open: data.o || data.c,
+      high: data.h || data.c,
+      low: data.l || data.c,
+      close: data.c,
+      volume: 0,
+    };
+    
+    return [candle];
   } catch (error) {
     console.error(`[FINNHUB] Error fetching ${symbol}:`, error);
     return null;
@@ -325,7 +332,7 @@ async function fetchPriceData(
   };
 }
 
-// ============= GENERATE TICK FROM CANDLES =============
+// ============= GENERATE TICK FROM CANDLES/QUOTES =============
 function generateTickFromCandles(
   symbol: string, 
   candles: OHLCV[], 
@@ -339,21 +346,38 @@ function generateTickFromCandles(
   // Apply realistic spread
   const { bid, ask } = applySpread(mid, marketType, symbol);
   
-  // Calculate volatility from recent candles
-  const recentCandles = candles.slice(-20);
-  const returns = recentCandles.slice(1).map((c, i) => 
-    Math.abs((c.close - recentCandles[i].close) / recentCandles[i].close)
-  );
-  const avgVolatility = returns.length > 0 
-    ? returns.reduce((a, b) => a + b, 0) / returns.length * 100 
-    : 0.5;
+  // Calculate volatility from candle data or estimate from high/low
+  let avgVolatility = 0.5;
   
-  // Determine regime
-  const sma5 = recentCandles.slice(-5).reduce((a, c) => a + c.close, 0) / 5;
-  const sma20 = recentCandles.reduce((a, c) => a + c.close, 0) / recentCandles.length;
+  if (candles.length > 1) {
+    // Multiple candles - calculate from returns
+    const recentCandles = candles.slice(-20);
+    const returns = recentCandles.slice(1).map((c, i) => 
+      Math.abs((c.close - recentCandles[i].close) / recentCandles[i].close)
+    );
+    avgVolatility = returns.length > 0 
+      ? returns.reduce((a, b) => a + b, 0) / returns.length * 100 
+      : 0.5;
+  } else if (latestCandle.high > 0 && latestCandle.low > 0) {
+    // Single quote - estimate volatility from high/low range
+    const range = (latestCandle.high - latestCandle.low) / mid;
+    avgVolatility = range * 100;
+  }
+  
+  // Determine regime from available data
   let regime = 'range';
-  if (sma5 > sma20 * 1.002) regime = 'trend';
-  else if (sma5 < sma20 * 0.998) regime = 'trend';
+  if (candles.length > 5) {
+    const recentCandles = candles.slice(-20);
+    const sma5 = recentCandles.slice(-5).reduce((a, c) => a + c.close, 0) / Math.min(5, recentCandles.length);
+    const sma20 = recentCandles.reduce((a, c) => a + c.close, 0) / recentCandles.length;
+    if (sma5 > sma20 * 1.002) regime = 'trend';
+    else if (sma5 < sma20 * 0.998) regime = 'trend';
+  } else if (latestCandle.close > latestCandle.open * 1.002) {
+    regime = 'trend';
+  } else if (latestCandle.close < latestCandle.open * 0.998) {
+    regime = 'trend';
+  }
+  
   if (avgVolatility > 1.5) regime = 'high_vol';
   if (avgVolatility < 0.2) regime = 'low_vol';
   
