@@ -487,16 +487,39 @@ function runMasterLogicV15(ctx: MasterLogicContext): {
   const diagnostics = { symbolsEvaluated: 0, candidatesFound: 0, passedFilters: 0 };
   const session = getSessionInfo();
   
+  // Guard: ensure ticks object exists
+  if (!ctx.ticks || typeof ctx.ticks !== 'object') {
+    console.warn('[MASTER_LOGIC] No ticks data provided');
+    return {
+      proposedOrders: [],
+      positionsToClose: [],
+      effectiveMode: ctx.selectedMode,
+      thermostat: updateThermostat(ctx.recentTrades, ctx.todayPnlPercent),
+      diagnostics,
+    };
+  }
+  
   // 1. Update thermostat
   const thermostat = updateThermostat(ctx.recentTrades, ctx.todayPnlPercent);
   
-  // 2. Classify regimes for all symbols
+  // 2. Filter symbols to only those with available tick data
+  const availableSymbols = ctx.symbols.filter(s => ctx.ticks[s] && ctx.ticks[s].mid > 0);
+  if (availableSymbols.length === 0) {
+    console.warn('[MASTER_LOGIC] No symbols have valid tick data');
+    return {
+      proposedOrders: [],
+      positionsToClose: [],
+      effectiveMode: ctx.selectedMode,
+      thermostat,
+      diagnostics,
+    };
+  }
+  
+  // 3. Classify regimes for available symbols only
   const regimes: Record<string, RegimeSnapshot> = {};
-  for (const symbol of ctx.symbols) {
+  for (const symbol of availableSymbols) {
     const tick = ctx.ticks[symbol];
-    if (tick) {
-      regimes[symbol] = classifyRegime(symbol, tick);
-    }
+    regimes[symbol] = classifyRegime(symbol, tick);
   }
   
   // 3. Resolve effective mode (handle Adaptive)
@@ -593,10 +616,10 @@ function runMasterLogicV15(ctx: MasterLogicContext): {
     return { proposedOrders: [], positionsToClose, effectiveMode, adaptiveSubMode, thermostat, diagnostics };
   }
   
-  // 6. Score all symbols
+  // 6. Score all symbols (only those with valid ticks)
   const candidates: ScoredCandidate[] = [];
   
-  for (const symbol of ctx.symbols) {
+  for (const symbol of availableSymbols) {
     diagnostics.symbolsEvaluated++;
     const tick = ctx.ticks[symbol];
     if (!tick || !tick.mid || tick.mid <= 0) continue;
@@ -792,11 +815,35 @@ serve(async (req) => {
       console.log(`[MANUAL_ACTION] Detected: takeProfit=${takeProfit}, globalClose=${globalClose}`);
     }
 
-    // Fetch latest prices
-    const priceResponse = await fetch(`${supabaseUrl}/functions/v1/price-feed`, {
-      headers: { Authorization: `Bearer ${supabaseKey}` },
-    });
-    const { ticks } = await priceResponse.json();
+    // Fetch latest prices with error handling
+    let ticks: Record<string, PriceTick> = {};
+    try {
+      const priceResponse = await fetch(`${supabaseUrl}/functions/v1/price-feed`, {
+        headers: { Authorization: `Bearer ${supabaseKey}` },
+      });
+      const priceData = await priceResponse.json();
+      
+      if (priceData && priceData.ticks && typeof priceData.ticks === 'object') {
+        ticks = priceData.ticks;
+      } else {
+        console.warn('[PAPER_TICK] No ticks data from price-feed, raw:', JSON.stringify(priceData).slice(0, 200));
+      }
+    } catch (priceFetchError) {
+      console.error('[PAPER_TICK] Failed to fetch prices:', priceFetchError);
+    }
+    
+    // Guard: if no market data available
+    const availableSymbols = Object.keys(ticks);
+    if (availableSymbols.length === 0) {
+      console.warn('[PAPER_TICK] No market data available');
+      return new Response(JSON.stringify({
+        ok: false,
+        reason: 'NO_MARKET_DATA',
+        message: 'Live market data unavailable. Check price-feed status.',
+      }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+    }
+    
+    console.log(`[PAPER_TICK] Got ${availableSymbols.length} symbols: ${availableSymbols.slice(0, 5).join(', ')}...`);
 
     // ================================================================
     // TAKE PROFIT HANDLER
@@ -1081,6 +1128,20 @@ serve(async (req) => {
         symbolsToTrade = DEFAULT_MARKET_CONFIG.selectedSymbols;
       }
       
+      // Filter to only symbols with available tick data
+      const symbolsWithData = symbolsToTrade.filter((s: string) => ticks[s] && ticks[s].mid > 0);
+      if (symbolsWithData.length === 0) {
+        console.warn(`[ENGINE] No tick data available for configured symbols: ${symbolsToTrade.join(', ')}`);
+        console.warn(`[ENGINE] Available ticks: ${Object.keys(ticks).join(', ')}`);
+        return new Response(JSON.stringify({
+          ok: false,
+          reason: 'NO_SYMBOL_DATA',
+          configuredSymbols: symbolsToTrade,
+          availableSymbols: Object.keys(ticks),
+          message: 'None of the configured symbols have live price data',
+        }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+      }
+      
       // Determine selected mode
       let enabledModes = modeConfig.enabledModes as TradingModeKey[] || ['scalper'];
       if (!enabledModes || enabledModes.length === 0) {
@@ -1107,12 +1168,12 @@ serve(async (req) => {
         selectedMode = enabledModes.find(m => m !== 'burst') || 'scalper';
       }
       
-      console.log(`[ENGINE] Running Master Logic v1.5 with mode=${selectedMode}, symbols=${symbolsToTrade.length}`);
+      console.log(`[ENGINE] Running Master Logic v1.5 with mode=${selectedMode}, symbols=${symbolsWithData.length} (of ${symbolsToTrade.length} configured)`);
       
       // Run Master Logic v1.5
       const result = runMasterLogicV15({
         selectedMode,
-        symbols: symbolsToTrade,
+        symbols: symbolsWithData,
         ticks,
         equity: startingEquity + finalTodayPnl,
         baseRiskPercent: riskConfig.riskPerTrade || 2,
@@ -1217,10 +1278,17 @@ serve(async (req) => {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });
   } catch (error) {
-    console.error('Paper tick error:', error);
-    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-    return new Response(JSON.stringify({ error: errorMessage }), {
-      status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    console.error('Paper tick runtime error:', error);
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    const errorStack = error instanceof Error ? error.stack : undefined;
+    return new Response(JSON.stringify({ 
+      ok: false,
+      reason: 'RUNTIME_ERROR',
+      message: errorMessage,
+      stack: errorStack,
+    }), {
+      status: 200, // Always return 200 to avoid 500 errors
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });
   }
 });
