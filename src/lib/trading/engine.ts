@@ -24,6 +24,7 @@ import { routeMarkets, shouldConsiderForEntry } from './router';
 import { analyzeSession, isModeRecommendedForSession } from './session-brain';
 import { updateThermostat, shouldThermostatAllowTrading, getInitialThermostatState, type ThermostatState } from './thermostat';
 import { selectTradingMode, getModeForTrade, type UserModeSelection } from './adaptive';
+import { buildOrderRequest, executeOrder, type OrderParams, type ExecutionResult } from './execution';
 
 interface RunTickInput {
   userId: string;
@@ -34,9 +35,94 @@ interface RunTickInput {
   startingEquity: number;
 }
 
+// Engine V1.5 types
+export interface ModeProfile {
+  name: string;
+  qualityThreshold?: number;
+  positionSize?: number;
+}
+
+export interface EngineV15Context {
+  ticks: Record<string, any> | null | undefined;
+  symbols: string[];
+  modeProfile: ModeProfile;
+  quality?: Record<string, number>;
+}
+
+export interface EngineV15Result {
+  ok: boolean;
+  reason?: string;
+  fill?: ExecutionResult['fill'];
+}
+
 // Persistent state
 let thermostatState: ThermostatState = getInitialThermostatState();
 let lastAdaptiveMode: ModePersonality | null = null;
+
+// Warm-start flag - first cycle MUST fire
+let warmStart = true;
+
+export function resetWarmStart(): void {
+  warmStart = true;
+}
+
+/**
+ * Engine V1.5 - Warm-start + fire guarantee layer
+ */
+export async function runEngineV15(ctx: EngineV15Context): Promise<EngineV15Result> {
+  const { ticks, symbols, modeProfile } = ctx;
+
+  // Guard: no ticks at all
+  if (!ticks || typeof ticks !== 'object' || Object.keys(ticks).length === 0) {
+    return { ok: false, reason: "NO_TICKS" };
+  }
+
+  // Filter to only symbols with valid tick data
+  const validSymbols = symbols.filter(s => ticks[s] !== undefined && ticks[s] !== null);
+  if (validSymbols.length === 0) {
+    return { ok: false, reason: "NO_VALID_SYMBOLS" };
+  }
+
+  // Warm-start booster: first run must produce a trade attempt
+  const forceFire = warmStart === true;
+  warmStart = false;
+
+  // Quality scoring
+  const scored = validSymbols
+    .map(s => ({
+      symbol: s,
+      score: ctx.quality?.[s] ?? 0,
+    }))
+    .sort((a, b) => b.score - a.score);
+
+  const best = scored[0];
+  if (!best) {
+    return { ok: false, reason: "NO_SCORABLE_SYMBOL" };
+  }
+
+  const qualityThreshold = modeProfile.qualityThreshold ?? 0.1;
+  const shouldFire = forceFire || best.score >= qualityThreshold;
+
+  if (!shouldFire) {
+    return { ok: false, reason: "QUALITY_TOO_LOW" };
+  }
+
+  // Build the order request with guarded params
+  const orderRequest = buildOrderRequest({
+    symbol: best.symbol,
+    side: Math.random() > 0.5 ? "BUY" : "SELL",
+    size: modeProfile.positionSize ?? 0.001,
+    mode: modeProfile.name,
+  });
+
+  if (!orderRequest.ok) {
+    return { ok: false, reason: orderRequest.reason };
+  }
+
+  // Execute order
+  const result = await executeOrder(orderRequest);
+  return result;
+}
 
 /**
  * Main trading engine tick function with full brain integration
@@ -398,3 +484,4 @@ export { calculateEdge, type EdgeSignal } from './edge';
 export { updateThermostat, type ThermostatState } from './thermostat';
 export { analyzeSession } from './session-brain';
 export { routeMarkets } from './router';
+export { buildOrderRequest, executeOrder } from './execution';
