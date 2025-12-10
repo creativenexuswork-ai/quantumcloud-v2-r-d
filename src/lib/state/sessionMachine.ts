@@ -234,13 +234,13 @@ export function transitionSession(state: SessionState, action: SessionAction): S
     
     case 'END_RUN':
       // End current run - no new trades allowed until next START_RUN
+      // ALWAYS transition to idle regardless of reason (auto_tp, manual_stop, close_all)
       return {
         ...state,
         runActive: false,
         // Clear run ID only on close_all (full reset)
         runId: action.reason === 'close_all' ? null : state.runId,
-        // Set status to idle for manual_stop and close_all
-        status: action.reason === 'auto_tp' ? state.status : 'idle',
+        status: 'idle',
       };
     
     case 'SET_AUTO_TP_FIRED':
