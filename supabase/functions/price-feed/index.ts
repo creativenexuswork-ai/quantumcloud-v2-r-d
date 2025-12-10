@@ -47,13 +47,30 @@ interface PriceTick {
 type MarketType = 'crypto' | 'forex' | 'stock';
 
 // ============= MARKET TYPE DETECTION =============
-function getMarketType(symbol: string): MarketType {
-  if (CRYPTO_PAIRS.includes(symbol)) return 'crypto';
-  if (FOREX_PAIRS.includes(symbol)) return 'forex';
-  if (STOCK_SYMBOLS.includes(symbol)) return 'stock';
-  // Default detection by pattern
-  if (symbol.endsWith('USD') && symbol.length <= 7) return 'crypto';
-  if (symbol.length === 6 && symbol.includes('USD')) return 'forex';
+function getMarketType(symbol: string, dbType?: string): MarketType {
+  // Use database type if provided
+  if (dbType) {
+    if (dbType === 'crypto') return 'crypto';
+    if (dbType === 'forex') return 'forex';
+    if (dbType === 'metal') return 'forex'; // Metals use forex-like pricing
+    if (dbType === 'index' || dbType === 'stock') return 'stock';
+  }
+  
+  // Normalize symbol for detection (remove slash)
+  const normalizedSymbol = symbol.replace('/', '');
+  
+  if (CRYPTO_PAIRS.includes(symbol) || CRYPTO_PAIRS.includes(normalizedSymbol)) return 'crypto';
+  if (FOREX_PAIRS.includes(symbol) || FOREX_PAIRS.includes(normalizedSymbol)) return 'forex';
+  if (STOCK_SYMBOLS.includes(symbol) || STOCK_SYMBOLS.includes(normalizedSymbol)) return 'stock';
+  
+  // Default detection by pattern (handle both BTC/USD and BTCUSD formats)
+  const baseLen = normalizedSymbol.length;
+  if (baseLen <= 6 && normalizedSymbol.endsWith('USD')) {
+    // BTC, ETH, etc. followed by USD = crypto
+    const base = normalizedSymbol.replace('USD', '');
+    if (base.length <= 4) return 'crypto';
+  }
+  if (baseLen === 6 && normalizedSymbol.includes('USD')) return 'forex';
   return 'stock';
 }
 
@@ -132,20 +149,25 @@ async function fetchFromFinnhub(
   let finnhubSymbol = symbol;
   
   try {
+    // Normalize symbol - remove slashes for API calls
+    const baseSymbol = symbol.replace('/', '');
+    
     switch (marketType) {
       case 'crypto':
-        // Finnhub crypto uses BINANCE: prefix
-        finnhubSymbol = `BINANCE:${symbol.replace('USD', '')}USDT`;
+        // Finnhub crypto uses BINANCE: prefix, format: BTCUSDT
+        const cryptoBase = baseSymbol.replace('USD', '');
+        finnhubSymbol = `BINANCE:${cryptoBase}USDT`;
         endpoint = `https://finnhub.io/api/v1/crypto/candle?symbol=${finnhubSymbol}&resolution=${resolution}&from=${from}&to=${now}&token=${apiKey}`;
         break;
       case 'forex':
-        // Finnhub forex uses OANDA: prefix
-        const fxSymbol = symbol.slice(0, 3) + '_' + symbol.slice(3);
-        finnhubSymbol = `OANDA:${fxSymbol}`;
+        // Finnhub forex uses OANDA: prefix, format: EUR_USD
+        const fxBase = baseSymbol.slice(0, 3);
+        const fxQuote = baseSymbol.slice(3);
+        finnhubSymbol = `OANDA:${fxBase}_${fxQuote}`;
         endpoint = `https://finnhub.io/api/v1/forex/candle?symbol=${finnhubSymbol}&resolution=${resolution}&from=${from}&to=${now}&token=${apiKey}`;
         break;
       case 'stock':
-        endpoint = `https://finnhub.io/api/v1/stock/candle?symbol=${symbol}&resolution=${resolution}&from=${from}&to=${now}&token=${apiKey}`;
+        endpoint = `https://finnhub.io/api/v1/stock/candle?symbol=${baseSymbol}&resolution=${resolution}&from=${from}&to=${now}&token=${apiKey}`;
         break;
     }
     
@@ -211,15 +233,20 @@ async function fetchFromTwelveData(
   let twelveSymbol = symbol;
   
   try {
+    // Normalize symbol - remove slashes first
+    const baseSymbol = symbol.replace('/', '');
+    
     // TwelveData uses different symbol formats
     if (marketType === 'crypto') {
-      // Convert BTCUSD -> BTC/USD
-      twelveSymbol = symbol.slice(0, -3) + '/USD';
+      // Format: BTC/USD
+      twelveSymbol = baseSymbol.slice(0, -3) + '/USD';
     } else if (marketType === 'forex') {
-      // Convert EURUSD -> EUR/USD
-      twelveSymbol = symbol.slice(0, 3) + '/' + symbol.slice(3);
+      // Format: EUR/USD
+      twelveSymbol = baseSymbol.slice(0, 3) + '/' + baseSymbol.slice(3);
+    } else {
+      // Stocks use ticker as-is
+      twelveSymbol = baseSymbol;
     }
-    // Stocks use ticker as-is
     
     const endpoint = `https://api.twelvedata.com/time_series?symbol=${encodeURIComponent(twelveSymbol)}&interval=${interval}&outputsize=100&apikey=${apiKey}`;
     
@@ -258,9 +285,10 @@ async function fetchFromTwelveData(
 // ============= UNIFIED DATA FETCH =============
 async function fetchPriceData(
   symbol: string, 
-  timeframe: string = '1m'
+  timeframe: string = '1m',
+  dbType?: string
 ): Promise<{ candles: OHLCV[] | null; source: string; error?: string }> {
-  const marketType = getMarketType(symbol);
+  const marketType = getMarketType(symbol, dbType);
   const marketOpen = isMarketOpen(marketType);
   
   if (!marketOpen) {
@@ -366,14 +394,21 @@ serve(async (req) => {
       // No body or invalid JSON - use defaults
     }
 
-    // Get active symbols from database if not specified
+    // Get active symbols from database with their types
+    let symbolTypeMap: Record<string, string> = {};
+    
     if (requestedSymbols.length === 0) {
       const { data: dbSymbols } = await supabase
         .from('symbols')
-        .select('symbol')
+        .select('symbol, type')
         .eq('is_active', true);
       
-      requestedSymbols = dbSymbols?.map(s => s.symbol) || [...CRYPTO_PAIRS, ...FOREX_PAIRS.slice(0, 3)];
+      if (dbSymbols && dbSymbols.length > 0) {
+        requestedSymbols = dbSymbols.map(s => s.symbol);
+        dbSymbols.forEach(s => { symbolTypeMap[s.symbol] = s.type; });
+      } else {
+        requestedSymbols = [...CRYPTO_PAIRS, ...FOREX_PAIRS.slice(0, 3)];
+      }
     }
     
     console.log(`[PRICE_FEED] Fetching ${requestedSymbols.length} symbols at ${timeframe}`);
@@ -385,7 +420,8 @@ serve(async (req) => {
 
     // Fetch each symbol (could be parallelized, but respecting rate limits)
     for (const symbol of requestedSymbols) {
-      const { candles, source, error } = await fetchPriceData(symbol, timeframe);
+      const dbType = symbolTypeMap[symbol];
+      const { candles, source, error } = await fetchPriceData(symbol, timeframe, dbType);
       
       if (candles && candles.length > 0) {
         const tick = generateTickFromCandles(symbol, candles, source, timeframe);
