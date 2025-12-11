@@ -4,7 +4,11 @@ import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from './useAuth';
 import { toast } from './use-toast';
 import { useSession, SessionStatus } from '@/lib/state/session';
-
+import { 
+  resetSessionState, 
+  handleSessionEnd as handleSessionEndRuntime,
+  type SessionEndReason 
+} from '@/lib/trading/resetSession';
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const TICK_INTERVAL_MS = 2000;
@@ -394,6 +398,35 @@ export function useTradingSession() {
     }
   }, [clearTickInterval, queryClient, setStatus]);
 
+  // Dispatch session end - resets runtime state and optionally restarts
+  const dispatchSessionEnd = useCallback(async (reason: SessionEndReason, autoRestart: boolean = false) => {
+    // Reset runtime state first
+    handleSessionEndRuntime(reason, status === 'running');
+    
+    // Then handle database-level reset
+    const { onSessionEnd } = await import('@/lib/trading/resetEngine');
+    
+    clearTickInterval();
+    
+    const result = await onSessionEnd(
+      reason as 'auto_tp' | 'max_dd' | 'risk_guard' | 'manual_stop',
+      !autoRestart // stopAfterHit is inverse of autoRestart
+    );
+    
+    if (result.success) {
+      const newStatus = autoRestart ? 'running' : 'idle';
+      setStatus(newStatus);
+      queryClient.invalidateQueries({ queryKey: ['paper-stats'] });
+      
+      // Restart tick interval if auto-restarting
+      if (autoRestart) {
+        startTickInterval();
+      }
+    }
+    
+    return result;
+  }, [clearTickInterval, setStatus, queryClient, status, startTickInterval]);
+
   // Trigger burst mode
   const triggerBurst = useCallback(async () => {
     try {
@@ -418,7 +451,7 @@ export function useTradingSession() {
     }
   }, [queryClient]);
 
-  // Take burst profit
+  // Take burst profit - triggers SESSION_END after closing positions
   const takeBurstProfit = useCallback(async () => {
     try {
       const { data: { session: currentSession } } = await supabase.auth.getSession();
@@ -434,7 +467,8 @@ export function useTradingSession() {
       });
       
       if (response.ok) {
-        queryClient.invalidateQueries({ queryKey: ['paper-stats'] });
+        // Dispatch SESSION_END for auto_tp to reset runtime state and continue
+        await dispatchSessionEnd('auto_tp', true);
       }
       
       toast({ title: 'Burst Profit Taken' });
@@ -442,7 +476,7 @@ export function useTradingSession() {
       console.error('Take burst profit error:', error);
       toast({ title: 'Error', description: 'Failed to take burst profit', variant: 'destructive' });
     }
-  }, [queryClient]);
+  }, [dispatchSessionEnd]);
 
   // Global close - close all positions and stop session using centralized reset
   const globalClose = useCallback(async () => {
@@ -577,6 +611,7 @@ export function useTradingSession() {
     takeBurstProfit, 
     globalClose,
     handleSessionEnd,
+    dispatchSessionEnd,
   };
 }
 

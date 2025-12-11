@@ -26,6 +26,16 @@ import { updateThermostat, shouldThermostatAllowTrading, getInitialThermostatSta
 import { selectTradingMode, getModeForTrade, type UserModeSelection } from './adaptive';
 import { buildOrderRequest, executeOrder, type OrderParams, type ExecutionResult } from './execution';
 
+// Session state management
+import { 
+  resetSessionState, 
+  handleSessionEnd as handleSessionEndInternal,
+  isWarmStart,
+  consumeWarmStart,
+  resetWarmStartFlag,
+  type SessionEndReason 
+} from './resetSession';
+
 interface RunTickInput {
   userId: string;
   config: PaperConfig;
@@ -59,11 +69,15 @@ export interface EngineV15Result {
 let thermostatState: ThermostatState = getInitialThermostatState();
 let lastAdaptiveMode: ModePersonality | null = null;
 
-// Warm-start flag - first cycle MUST fire
-let warmStart = true;
+// Re-export resetWarmStart from resetSession for backward compatibility
+export { resetWarmStartFlag as resetWarmStart } from './resetSession';
 
-export function resetWarmStart(): void {
-  warmStart = true;
+/**
+ * Dispatch session end event through the reset pipeline
+ * This is the main entry point for session termination
+ */
+export function dispatchSessionEnd(reason: SessionEndReason, wasRunning: boolean = false) {
+  return handleSessionEndInternal(reason, wasRunning);
 }
 
 /**
@@ -84,8 +98,10 @@ export async function runEngineV15(ctx: EngineV15Context): Promise<EngineV15Resu
   }
 
   // Warm-start booster: first run must produce a trade attempt
-  const forceFire = warmStart === true;
-  warmStart = false;
+  const forceFire = isWarmStart();
+  if (forceFire) {
+    consumeWarmStart();
+  }
 
   // Quality scoring
   const scored = validSymbols
@@ -486,3 +502,10 @@ export { analyzeSession } from './session-brain';
 export { routeMarkets } from './router';
 export { buildOrderRequest, executeOrder } from './execution';
 export { resetEngine, onSessionEnd, type RunEndReason, type ResetEngineOptions, type ResetEngineResult } from './resetEngine';
+export { 
+  resetSessionState, 
+  handleSessionEnd as handleSessionEndRuntime,
+  getSessionRuntimeState,
+  type SessionEndReason,
+  type SessionRuntimeState 
+} from './resetSession';
