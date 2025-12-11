@@ -82,7 +82,6 @@ export function useSessionActions() {
           openCount: stats.stats.openPositionsCount || 0,
         });
       }
-      // Halted state removed - daily loss is metric only
     } catch (error) {
       // Silent fail for P&L refresh - non-critical
     }
@@ -138,8 +137,6 @@ export function useSessionActions() {
       }
       
       const data = await response.json();
-      
-      // Halted state removed - daily loss is metric only
       
       // Sync session status from backend
       if (data.sessionStatus) {
@@ -334,13 +331,6 @@ export function useSessionActions() {
   // Creates a new run with Auto-TP parameters
   const activate = useCallback(async () => {
     const state = useSessionStore.getState();
-    
-    // Soft-mode bypass: halted check disabled
-    // (state.halted still calculated for analytics)
-    if (false) {
-      toast({ title: 'Trading Halted', description: 'Daily loss limit reached', variant: 'destructive' });
-      return;
-    }
     
     // Can activate from idle, stopped, or holding
     if (state.status !== 'idle' && state.status !== 'stopped' && state.status !== 'holding') {
@@ -698,7 +688,7 @@ export function useSessionActions() {
     });
   }, [dispatch]);
 
-  // Reset session (clear halted state, reset to idle)
+  // Reset session to idle state
   const resetSession = useCallback(async () => {
     clearTickInterval();
     clearPnlRefresh();
@@ -711,7 +701,6 @@ export function useSessionActions() {
       await supabase.from('paper_config').update({
         is_running: false,
         session_status: 'idle',
-        trading_halted_for_day: false,
         burst_requested: false,
       } as any).eq('user_id', user.id);
     }

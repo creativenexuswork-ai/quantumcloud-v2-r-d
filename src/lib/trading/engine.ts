@@ -299,8 +299,7 @@ export function runTradingTick(input: RunTickInput): EngineState {
       positions,
       trades: allTodayTrades,
       stats: calculateStats(positions, allTodayTrades, startingEquity),
-      logs,
-      halted: false
+      logs
     };
   }
   
@@ -455,8 +454,7 @@ export function runTradingTick(input: RunTickInput): EngineState {
     positions: finalPositions,
     trades: allTodayTrades,
     stats: finalStats,
-    logs,
-    halted: false
+    logs
   };
 }
 
@@ -477,8 +475,7 @@ export function globalClose(
     positions: [],
     trades: allTrades,
     stats,
-    logs,
-    halted: false
+    logs
   };
 }
 
@@ -502,8 +499,7 @@ export function takeBurstProfit(
     positions: otherPositions,
     trades: allTrades,
     stats,
-    logs,
-    halted: false
+    logs
   };
 }
 

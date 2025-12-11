@@ -42,7 +42,6 @@ export function useEngineReset(): UseEngineResetResult {
           is_running: false,
           session_status: 'idle',
           burst_requested: false,
-          trading_halted_for_day: false,
         } as any).eq('user_id', user.id);
 
         await supabase.from('system_logs').insert({
