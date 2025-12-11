@@ -6,6 +6,10 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
+// ============== TESTING FLAG ==============
+// TODO: Set back to false when finished debugging daily halt behavior
+const DISABLE_DAILY_HALT_FOR_TESTING = true;
+
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
@@ -185,7 +189,9 @@ serve(async (req) => {
       : burstPnlPercent >= burstConfig.dailyProfitTargetPercent ? 'locked' : 'idle';
 
     // Halted check - in reset state, never halted
-    const isHalted = isResetState ? false : (todayPnlPercent <= -riskConfig.maxDailyLossPercent || config?.trading_halted_for_day);
+    // In test mode, always report halted=false to prevent UI from blocking
+    const isHaltedCalculated = isResetState ? false : (todayPnlPercent <= -riskConfig.maxDailyLossPercent || config?.trading_halted_for_day);
+    const isHalted = DISABLE_DAILY_HALT_FOR_TESTING ? false : isHaltedCalculated;
     const sessionStatus = config?.session_status || 'idle';
 
     const stats = {

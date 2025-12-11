@@ -14,6 +14,10 @@ const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const TICK_INTERVAL_MS = 2000;
 const STATS_REFRESH_MS = 600; // P&L refresh every 600ms for faster updates
 
+// ============== TESTING FLAG ==============
+// TODO: Set back to false when finished debugging daily halt behavior
+const DISABLE_DAILY_HALT_FOR_TESTING = true;
+
 /**
  * Handle 401 responses from Edge Functions - logs and notifies user without touching engine logic.
  */
@@ -640,19 +644,25 @@ export function useTradingSession() {
         if (!mounted) return;
 
         if (config) {
-          setHalted(config.trading_halted_for_day || false);
+          // In test mode, ignore halted flag from DB
+          const effectiveHalted = DISABLE_DAILY_HALT_FOR_TESTING ? false : (config.trading_halted_for_day || false);
+          setHalted(effectiveHalted);
           
           // Restore session status from backend
           const backendStatus = (config as any).session_status as SessionStatus || 'idle';
           setStatus(backendStatus);
           
-          // Start tick interval if running or holding
-          if ((backendStatus === 'running' || backendStatus === 'holding') && !config.trading_halted_for_day) {
+          // Start tick interval if running or holding (in test mode, ignore halt check)
+          const shouldStartTick = (backendStatus === 'running' || backendStatus === 'holding') && 
+            (DISABLE_DAILY_HALT_FOR_TESTING || !config.trading_halted_for_day);
+          
+          if (shouldStartTick) {
             const result = await runTickInternal();
             
             if (!mounted) return;
             
-            if (result?.halted) {
+            // In test mode, ignore halted response
+            if (result?.halted && !DISABLE_DAILY_HALT_FOR_TESTING) {
               await supabase.from('paper_config').update({ 
                 is_running: false, 
                 session_status: 'idle' 
