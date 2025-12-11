@@ -197,24 +197,24 @@ export function PerformancePanel() {
 
       {/* Set Balance Control Row */}
       <hr className="border-0 border-t border-border/30 my-3" />
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-3 flex-wrap">
         <input
           type="number"
-          className="flex-1 bg-muted/20 border border-border/40 rounded-lg px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary/50 disabled:opacity-40"
+          className="flex-1 min-w-[120px] bg-muted/20 border border-border/40 rounded-lg px-3 py-2.5 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary/50 disabled:opacity-40"
           placeholder="10000"
           value={startingBalanceInput}
           onChange={(e) => setStartingBalanceInput(Number(e.target.value))}
           disabled={botRunning || isResetting}
         />
         <button
-          className="bg-gradient-to-r from-primary to-accent px-4 py-2 rounded-lg text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed"
+          className="bg-gradient-to-r from-primary to-accent px-4 py-2.5 rounded-[10px] text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap"
           onClick={handleSetBalance}
           disabled={botRunning || isResetting}
         >
           {isResetting ? 'Resetting...' : 'Set Balance'}
         </button>
         <button
-          className="bg-muted/30 border border-border/50 px-3 py-2 rounded-lg text-xs font-medium text-foreground/85 transition-all hover:bg-muted/50 disabled:opacity-35 disabled:cursor-not-allowed"
+          className="bg-foreground/5 border border-foreground/10 px-3.5 py-2.5 rounded-[10px] text-[0.85rem] font-medium text-foreground/85 backdrop-blur-sm transition-all hover:bg-foreground/10 disabled:opacity-35 disabled:cursor-not-allowed whitespace-nowrap"
           onClick={handleResetOnly}
           disabled={botRunning || isResetting}
         >
