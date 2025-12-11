@@ -2,9 +2,9 @@ import { useState } from 'react';
 import { TrendingUp, TrendingDown, Target, Percent } from 'lucide-react';
 import { useFullSessionState } from '@/hooks/useSessionState';
 import { cn } from '@/lib/utils';
-import { supabase } from '@/integrations/supabase/client';
 import { useQueryClient } from '@tanstack/react-query';
 import { toast } from '@/hooks/use-toast';
+import { resetEngine } from '@/lib/trading/resetEngine';
 
 export function PerformancePanel() {
   const { equity, todayPnl, todayPnlPercent, tradesToday, winRate, status, setStatus } = useFullSessionState();
@@ -26,40 +26,22 @@ export function PerformancePanel() {
 
     setIsResetting(true);
     try {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) throw new Error('Not authenticated');
+      const result = await resetEngine({
+        reason: 'set_balance',
+        keepRunning: false,
+        newPaperBalance: v,
+      });
 
-      // Close all open positions
-      await supabase.from('paper_positions').delete().eq('user_id', user.id);
-
-      // Clear today's trades
-      const today = new Date().toISOString().split('T')[0];
-      await supabase.from('paper_trades').delete().eq('user_id', user.id).eq('session_date', today);
-
-      // Reset paper_stats_daily for today
-      await supabase.from('paper_stats_daily').upsert({
-        user_id: user.id,
-        trade_date: today,
-        equity_start: v,
-        equity_end: v,
-        pnl: 0,
-        win_rate: 0,
-        trades_count: 0,
-        max_drawdown: 0,
-      }, { onConflict: 'user_id,trade_date' });
-
-      // Set session to idle
-      await supabase.from('paper_config').update({
-        is_running: false,
-        session_status: 'idle',
-      } as any).eq('user_id', user.id);
-
-      setStatus('idle');
-      queryClient.invalidateQueries({ queryKey: ['paper-stats'] });
-      toast({ title: 'Balance Reset', description: `Balance set to $${v.toLocaleString()}` });
+      if (result.success) {
+        setStatus('idle');
+        queryClient.invalidateQueries({ queryKey: ['paper-stats'] });
+        toast({ title: 'Balance Reset', description: `Starting balance set to $${v.toLocaleString()} and engine reset.` });
+      } else {
+        toast({ title: 'Error', description: result.error || 'Failed to reset balance', variant: 'destructive' });
+      }
     } catch (error) {
-      console.error('Reset balance error:', error);
-      toast({ title: 'Error', description: 'Failed to reset balance', variant: 'destructive' });
+      console.error('Set balance error:', error);
+      toast({ title: 'Error', description: 'Failed to set balance', variant: 'destructive' });
     } finally {
       setIsResetting(false);
     }
@@ -68,48 +50,23 @@ export function PerformancePanel() {
   const handleResetOnly = async () => {
     if (botRunning || isResetting) return;
 
-    const v = Number(startingBalanceInput);
-    if (!v || v <= 0 || Number.isNaN(v)) {
-      toast({ title: 'Invalid Amount', description: 'Enter a valid positive number.', variant: 'destructive' });
-      return;
-    }
-
     setIsResetting(true);
     try {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) throw new Error('Not authenticated');
+      const result = await resetEngine({
+        reason: 'manual_reset',
+        keepRunning: false,
+      });
 
-      // Close all open positions
-      await supabase.from('paper_positions').delete().eq('user_id', user.id);
-
-      // Clear today's trades
-      const today = new Date().toISOString().split('T')[0];
-      await supabase.from('paper_trades').delete().eq('user_id', user.id).eq('session_date', today);
-
-      // Reset paper_stats_daily for today using current input value
-      await supabase.from('paper_stats_daily').upsert({
-        user_id: user.id,
-        trade_date: today,
-        equity_start: v,
-        equity_end: v,
-        pnl: 0,
-        win_rate: 0,
-        trades_count: 0,
-        max_drawdown: 0,
-      }, { onConflict: 'user_id,trade_date' });
-
-      // Set session to idle
-      await supabase.from('paper_config').update({
-        is_running: false,
-        session_status: 'idle',
-      } as any).eq('user_id', user.id);
-
-      setStatus('idle');
-      queryClient.invalidateQueries({ queryKey: ['paper-stats'] });
-      toast({ title: 'Stats Reset', description: 'Balance & stats reset.' });
+      if (result.success) {
+        setStatus('idle');
+        queryClient.invalidateQueries({ queryKey: ['paper-stats'] });
+        toast({ title: 'Engine Reset', description: 'Positions, stats and guards cleared.' });
+      } else {
+        toast({ title: 'Error', description: result.error || 'Failed to reset', variant: 'destructive' });
+      }
     } catch (error) {
       console.error('Reset error:', error);
-      toast({ title: 'Error', description: 'Failed to reset stats', variant: 'destructive' });
+      toast({ title: 'Error', description: 'Failed to reset engine', variant: 'destructive' });
     } finally {
       setIsResetting(false);
     }

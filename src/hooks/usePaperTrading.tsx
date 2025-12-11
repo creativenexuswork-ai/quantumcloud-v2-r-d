@@ -444,9 +444,10 @@ export function useTradingSession() {
     }
   }, [queryClient]);
 
-  // Global close - close all positions and stop session
+  // Global close - close all positions and stop session using centralized reset
   const globalClose = useCallback(async () => {
     try {
+      // First call paper-tick with globalClose to close positions on backend
       const { data: { session: currentSession } } = await supabase.auth.getSession();
       if (!currentSession?.access_token) return;
       
@@ -481,6 +482,33 @@ export function useTradingSession() {
       toast({ title: 'Error', description: 'Failed to close positions', variant: 'destructive' });
     }
   }, [queryClient, clearTickInterval, setStatus]);
+
+  // Handle session end events (Auto-TP, max-loss, etc.) using centralized reset
+  const handleSessionEnd = useCallback(async (reason: 'auto_tp' | 'max_dd' | 'risk_guard' | 'manual_stop', autoTpStopAfterHit: boolean = true) => {
+    const { onSessionEnd } = await import('@/lib/trading/resetEngine');
+    
+    clearTickInterval();
+    
+    const result = await onSessionEnd(reason, autoTpStopAfterHit);
+    
+    if (result.success) {
+      setStatus(result.reason === 'auto_tp' && !autoTpStopAfterHit ? 'running' : 'idle');
+      queryClient.invalidateQueries({ queryKey: ['paper-stats'] });
+      
+      const messages: Record<string, string> = {
+        auto_tp: autoTpStopAfterHit ? 'Auto Take Profit hit - session stopped' : 'Auto Take Profit hit - restarting with fresh baseline',
+        max_dd: 'Max daily drawdown hit - session stopped',
+        risk_guard: 'Risk guard triggered - session stopped',
+        manual_stop: 'Session stopped manually',
+      };
+      
+      toast({ 
+        title: 'Session Ended', 
+        description: messages[reason] || 'Session ended',
+        variant: reason === 'auto_tp' && !autoTpStopAfterHit ? 'default' : 'destructive'
+      });
+    }
+  }, [clearTickInterval, setStatus, queryClient]);
 
   // Initialize session state on mount
   useEffect(() => {
@@ -548,6 +576,7 @@ export function useTradingSession() {
     triggerBurst, 
     takeBurstProfit, 
     globalClose,
+    handleSessionEnd,
   };
 }
 
