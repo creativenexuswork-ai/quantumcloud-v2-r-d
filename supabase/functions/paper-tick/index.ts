@@ -452,6 +452,106 @@ function selectAdaptiveSubMode(
   return 'scalper';
 }
 
+// ============== Directional Bias Filter v1.0 ==============
+
+interface DirectionalPerformance {
+  longWinRate: number;
+  shortWinRate: number;
+  longCount: number;
+  shortCount: number;
+  longPnl: number;
+  shortPnl: number;
+}
+
+interface BiasFilterResult {
+  allowed: boolean;
+  reason: string;
+  biasDirection: Side | 'neutral';
+}
+
+const CATASTROPHIC_WIN_RATE = 20;
+const MIN_TRADES_FOR_BIAS = 5;
+const REGIME_OVERRIDE_STRENGTH = 50;
+
+function calculateDirectionalPerformance(trades: any[]): DirectionalPerformance {
+  const longs = trades.filter(t => t.side === 'long');
+  const shorts = trades.filter(t => t.side === 'short');
+  
+  const longWins = longs.filter(t => Number(t.realized_pnl) > 0).length;
+  const shortWins = shorts.filter(t => Number(t.realized_pnl) > 0).length;
+  
+  const longPnl = longs.reduce((sum, t) => sum + Number(t.realized_pnl), 0);
+  const shortPnl = shorts.reduce((sum, t) => sum + Number(t.realized_pnl), 0);
+  
+  return {
+    longWinRate: longs.length > 0 ? (longWins / longs.length) * 100 : 50,
+    shortWinRate: shorts.length > 0 ? (shortWins / shorts.length) * 100 : 50,
+    longCount: longs.length,
+    shortCount: shorts.length,
+    longPnl,
+    shortPnl
+  };
+}
+
+function applyBiasFilter(
+  proposedDirection: Side,
+  regime: RegimeSnapshot | null,
+  recentTrades: any[]
+): BiasFilterResult {
+  const perf = calculateDirectionalPerformance(recentTrades);
+  
+  // Check for catastrophic SHORT performance
+  if (proposedDirection === 'short' && 
+      perf.shortCount >= MIN_TRADES_FOR_BIAS && 
+      perf.shortWinRate < CATASTROPHIC_WIN_RATE) {
+    console.log(`[BIAS_FILTER] BLOCKED SHORT: win rate ${perf.shortWinRate.toFixed(0)}% catastrophic (${perf.shortCount} trades, $${perf.shortPnl.toFixed(0)})`);
+    return {
+      allowed: false,
+      reason: `SHORT blocked: ${perf.shortWinRate.toFixed(0)}% win rate (${perf.shortCount} trades)`,
+      biasDirection: 'long'
+    };
+  }
+  
+  // Check for catastrophic LONG performance
+  if (proposedDirection === 'long' && 
+      perf.longCount >= MIN_TRADES_FOR_BIAS && 
+      perf.longWinRate < CATASTROPHIC_WIN_RATE) {
+    console.log(`[BIAS_FILTER] BLOCKED LONG: win rate ${perf.longWinRate.toFixed(0)}% catastrophic (${perf.longCount} trades, $${perf.longPnl.toFixed(0)})`);
+    return {
+      allowed: false,
+      reason: `LONG blocked: ${perf.longWinRate.toFixed(0)}% win rate (${perf.longCount} trades)`,
+      biasDirection: 'short'
+    };
+  }
+  
+  // Check regime-based blocking (only if regime is strong)
+  if (regime && regime.confidence > 0.6 && regime.trendStrength > REGIME_OVERRIDE_STRENGTH) {
+    if (proposedDirection === 'short' && regime.trendBias === 'bull') {
+      console.log(`[BIAS_FILTER] BLOCKED SHORT: against strong bullish regime (strength=${regime.trendStrength.toFixed(0)})`);
+      return {
+        allowed: false,
+        reason: `SHORT blocked: strong bullish regime`,
+        biasDirection: 'long'
+      };
+    }
+    if (proposedDirection === 'long' && regime.trendBias === 'bear') {
+      console.log(`[BIAS_FILTER] BLOCKED LONG: against strong bearish regime (strength=${regime.trendStrength.toFixed(0)})`);
+      return {
+        allowed: false,
+        reason: `LONG blocked: strong bearish regime`,
+        biasDirection: 'short'
+      };
+    }
+  }
+  
+  return {
+    allowed: true,
+    reason: 'Direction allowed',
+    biasDirection: 'neutral'
+  };
+}
+
+
 // ============== Master Logic v1.5 - Unified Brain ==============
 
 interface MasterLogicContext {
@@ -677,8 +777,26 @@ function runMasterLogicV15(ctx: MasterLogicContext): {
     } else if (regime.trendBias === 'bear' && regime.confidence > 0.35) {
       direction = 'short';
     } else {
-      // Fallback - always have a direction to ensure trades fire
-      direction = Math.random() > 0.5 ? 'long' : 'short';
+      // Fallback - prefer long in neutral bias (based on recent performance)
+      const perf = calculateDirectionalPerformance(ctx.recentTrades);
+      direction = perf.longPnl >= perf.shortPnl ? 'long' : 'short';
+    }
+    
+    // CRITICAL: Apply directional bias filter
+    const biasResult = applyBiasFilter(direction, regime, ctx.recentTrades);
+    if (!biasResult.allowed) {
+      // If blocked, try opposite direction
+      const oppositeDir: Side = direction === 'long' ? 'short' : 'long';
+      const oppositeCheck = applyBiasFilter(oppositeDir, regime, ctx.recentTrades);
+      
+      if (oppositeCheck.allowed) {
+        direction = oppositeDir;
+        reasons.push(`direction_flipped: ${biasResult.reason}`);
+      } else {
+        // Both directions blocked - skip this symbol
+        console.log(`[BIAS_FILTER] ${symbol} skipped: both directions blocked`);
+        continue;
+      }
     }
     
     // Calculate confidence
