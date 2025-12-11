@@ -7,8 +7,9 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useTradingState } from './useSessionState';
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
-const TICK_INTERVAL_MS = 2000; // Trading tick interval - strategy execution
-const PNL_REFRESH_MS = 300; // P&L refresh interval - fast UI updates
+const TICK_INTERVAL_MS = 2000;   // 2s between ticks
+const PNL_REFRESH_MS = 300;      // 0.3s PnL refresh
+const AUTO_TP_CHECK_MS = 5000;   // 5s Auto-TP check (unchanged)
 
 // Map UI mode to backend mode
 const MODE_TO_BACKEND: Record<TradingMode, string> = {
@@ -339,7 +340,7 @@ export function useSessionActions() {
         
         queryClient.invalidateQueries({ queryKey: ['paper-stats'] });
       }
-    }, TICK_INTERVAL_MS * 2);
+    }, AUTO_TP_CHECK_MS);
   }, [runTick, queryClient, clearAutoTpCheck, dispatch]);
 
   // ACTIVATE - Start trading session OR Resume from holding
@@ -443,9 +444,13 @@ export function useSessionActions() {
         return;
       }
       
+      // Start intervals
       startTickInterval();
       startPnlRefresh();
       startAutoTpCheck();
+      
+      // Sync PnL/UI immediately
+      await refreshPnl();
       
       toast({ 
         title: wasHolding ? 'Session Resumed' : 'Session Activated', 
