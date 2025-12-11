@@ -159,10 +159,7 @@ export function usePaperAccountReset() {
         equity: 10000 
       });
       
-      // 7. Clear halted flag
-      dispatch({ type: 'SET_HALTED', halted: false });
-      
-      // 8. Clear any pending actions
+      // 7. Clear any pending actions
       dispatch({ type: 'SET_PENDING_ACTION', pendingAction: null });
       
       // 9. Sync positions (none open after reset)
