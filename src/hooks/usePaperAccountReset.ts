@@ -20,7 +20,10 @@ export interface PaperAccountResetResult {
 export function usePaperAccountReset() {
   const [isResetting, setIsResetting] = useState(false);
   const queryClient = useQueryClient();
-  const dispatch = useSessionStore((state) => state.dispatch);
+  
+  // Get dispatch directly from store without selector to avoid hook ordering issues
+  const store = useSessionStore();
+  const dispatch = store.dispatch;
 
   const resetPaperAccount = useCallback(async (): Promise<PaperAccountResetResult> => {
     setIsResetting(true);
