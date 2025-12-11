@@ -349,13 +349,15 @@ export function useSessionActions() {
 
   // ACTIVATE - Start trading session OR Resume from holding
   // Creates a new run with Auto-TP parameters
+  // TEMPORARY: halt bypass for debugging. Remove after timing engine unification.
   const activate = useCallback(async () => {
     const state = useSessionStore.getState();
     
-    if (state.halted) {
-      toast({ title: 'Trading Halted', description: 'Daily loss limit reached', variant: 'destructive' });
-      return;
-    }
+    // TEMPORARY BYPASS: Halted check disabled for debugging
+    // if (state.halted) {
+    //   toast({ title: 'Trading Halted', description: 'Daily loss limit reached', variant: 'destructive' });
+    //   return;
+    // }
     
     // Can activate from idle, stopped, or holding
     if (state.status !== 'idle' && state.status !== 'stopped' && state.status !== 'holding') {
@@ -427,26 +429,30 @@ export function useSessionActions() {
         targetEquity 
       });
       
+      // TEMPORARY: Force-clear halted state for debugging
+      dispatch({ type: 'SET_HALTED', halted: false });
+      
       console.log(`[RUN] Started: id=${runId}, baseline=${currentEquity.toFixed(2)}, target=${targetEquity?.toFixed(2) || 'none'}, mode=${autoTpMode}`);
 
       // Run immediate tick
       const result = await runTick();
       
-      if (result?.halted) {
-        toast({
-          title: 'Trading Halted',
-          description: 'Daily loss limit reached.',
-          variant: 'destructive',
-        });
-        await supabase.from('paper_config').update({
-          is_running: false,
-          session_status: 'idle',
-        } as any).eq('user_id', user.id);
-        dispatch({ type: 'SET_HALTED', halted: true });
-        dispatch({ type: 'END_RUN', reason: 'manual_stop' });
-        dispatch({ type: 'SET_PENDING_ACTION', pendingAction: null });
-        return;
-      }
+      // TEMPORARY BYPASS: Halted check disabled for debugging - always start intervals
+      // if (result?.halted) {
+      //   toast({
+      //     title: 'Trading Halted',
+      //     description: 'Daily loss limit reached.',
+      //     variant: 'destructive',
+      //   });
+      //   await supabase.from('paper_config').update({
+      //     is_running: false,
+      //     session_status: 'idle',
+      //   } as any).eq('user_id', user.id);
+      //   dispatch({ type: 'SET_HALTED', halted: true });
+      //   dispatch({ type: 'END_RUN', reason: 'manual_stop' });
+      //   dispatch({ type: 'SET_PENDING_ACTION', pendingAction: null });
+      //   return;
+      // }
       
       // Start intervals
       startTickInterval();
