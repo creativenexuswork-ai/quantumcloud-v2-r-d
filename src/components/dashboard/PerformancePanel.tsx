@@ -1,11 +1,69 @@
+import { useState } from 'react';
 import { TrendingUp, TrendingDown, Target, Percent } from 'lucide-react';
 import { useFullSessionState } from '@/hooks/useSessionState';
 import { cn } from '@/lib/utils';
+import { supabase } from '@/integrations/supabase/client';
+import { useQueryClient } from '@tanstack/react-query';
+import { toast } from '@/hooks/use-toast';
 
 export function PerformancePanel() {
-  const { equity, todayPnl, todayPnlPercent, tradesToday, winRate } = useFullSessionState();
+  const { equity, todayPnl, todayPnlPercent, tradesToday, winRate, status, setStatus } = useFullSessionState();
+  const queryClient = useQueryClient();
+  const [startingBalanceInput, setStartingBalanceInput] = useState<number>(10000);
+  const [isResetting, setIsResetting] = useState(false);
 
+  const botRunning = status === 'running' || status === 'holding';
   const avgRR = 1.5; // Placeholder - would come from stats
+
+  const handleSetBalance = async () => {
+    if (botRunning || isResetting) return;
+
+    const v = Number(startingBalanceInput);
+    if (!v || v <= 0 || Number.isNaN(v)) {
+      toast({ title: 'Invalid Amount', description: 'Enter a valid positive number.', variant: 'destructive' });
+      return;
+    }
+
+    setIsResetting(true);
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) throw new Error('Not authenticated');
+
+      // Close all open positions
+      await supabase.from('paper_positions').delete().eq('user_id', user.id);
+
+      // Clear today's trades
+      const today = new Date().toISOString().split('T')[0];
+      await supabase.from('paper_trades').delete().eq('user_id', user.id).eq('session_date', today);
+
+      // Reset paper_stats_daily for today
+      await supabase.from('paper_stats_daily').upsert({
+        user_id: user.id,
+        trade_date: today,
+        equity_start: v,
+        equity_end: v,
+        pnl: 0,
+        win_rate: 0,
+        trades_count: 0,
+        max_drawdown: 0,
+      }, { onConflict: 'user_id,trade_date' });
+
+      // Set session to idle
+      await supabase.from('paper_config').update({
+        is_running: false,
+        session_status: 'idle',
+      } as any).eq('user_id', user.id);
+
+      setStatus('idle');
+      queryClient.invalidateQueries({ queryKey: ['paper-stats'] });
+      toast({ title: 'Balance Reset', description: `Balance set to $${v.toLocaleString()}` });
+    } catch (error) {
+      console.error('Reset balance error:', error);
+      toast({ title: 'Error', description: 'Failed to reset balance', variant: 'destructive' });
+    } finally {
+      setIsResetting(false);
+    }
+  };
 
   // Generate dummy sparkline data
   const sparklineData = Array.from({ length: 20 }, (_, i) => {
@@ -86,6 +144,27 @@ export function PerformancePanel() {
           <p className="text-xs text-muted-foreground">R:R</p>
         </div>
       </div>
+
+      {/* Set Balance Control Row */}
+      <hr className="border-0 border-t border-border/30 my-3" />
+      <div className="flex items-center gap-3">
+        <input
+          type="number"
+          className="flex-1 bg-muted/20 border border-border/40 rounded-lg px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary/50 disabled:opacity-40"
+          placeholder="10000"
+          value={startingBalanceInput}
+          onChange={(e) => setStartingBalanceInput(Number(e.target.value))}
+          disabled={botRunning || isResetting}
+        />
+        <button
+          className="bg-gradient-to-r from-primary to-accent px-4 py-2 rounded-lg text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed"
+          onClick={handleSetBalance}
+          disabled={botRunning || isResetting}
+        >
+          {isResetting ? 'Resetting...' : 'Set Balance'}
+        </button>
+      </div>
+      <hr className="border-0 border-t border-border/30 my-3" />
 
       {/* P&L Sparkline */}
       <div className="h-16 rounded-lg bg-muted/20 p-2 relative overflow-hidden">
