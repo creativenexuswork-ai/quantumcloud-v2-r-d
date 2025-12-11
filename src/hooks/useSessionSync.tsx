@@ -4,8 +4,7 @@ import { useSessionStore } from '@/lib/state/sessionMachine';
 
 /**
  * Hook to sync session data from backend paper-stats polling.
- * Syncs P&L, positions, stats only.
- * TODO: Re-enable halted and session status sync after testing.
+ * Syncs P&L, positions, halted state, and session status.
  */
 export function useSessionSync() {
   const { data: paperData, refetch } = usePaperStats();
@@ -18,7 +17,7 @@ export function useSessionSync() {
 
     const { stats } = paperData;
 
-    // Sync position data - this is purely informational
+    // Sync position data
     if (stats) {
       const hasPositions = (stats.openPositionsCount || 0) > 0;
       const openCount = stats.openPositionsCount || 0;
@@ -38,21 +37,19 @@ export function useSessionSync() {
       });
     }
 
-    // TODO: Re-enable halted sync after testing
-    // TEMPORARY: Never set halted state from backend
-    // if (paperData.halted !== undefined) {
-    //   dispatch({ type: 'SET_HALTED', halted: paperData.halted });
-    // }
+    // Sync halted state from backend
+    if (paperData.halted !== undefined) {
+      dispatch({ type: 'SET_HALTED', halted: paperData.halted });
+    }
 
-    // TODO: Re-enable session status sync after testing
-    // TEMPORARY: Never force session to idle from backend sync
-    // const backendStatus = paperData.sessionStatus;
-    // if (backendStatus === 'idle' || backendStatus === 'stopped') {
-    //   if (currentStatus === 'running' || currentStatus === 'holding') {
-    //     console.log(`[SessionSync] Backend says ${backendStatus}, syncing from ${currentStatus}`);
-    //     dispatch({ type: 'SYNC_STATUS', status: backendStatus });
-    //   }
-    // }
+    // Sync session status from backend (for terminal states)
+    const backendStatus = paperData.sessionStatus;
+    if (backendStatus === 'idle' || backendStatus === 'stopped') {
+      if (currentStatus === 'running' || currentStatus === 'holding') {
+        console.log(`[SessionSync] Backend says ${backendStatus}, syncing from ${currentStatus}`);
+        dispatch({ type: 'SYNC_STATUS', status: backendStatus });
+      }
+    }
 
     lastStatusRef.current = currentStatus;
   }, [paperData, dispatch, currentStatus]);
