@@ -498,57 +498,58 @@ function applyBiasFilter(
   regime: RegimeSnapshot | null,
   recentTrades: any[]
 ): BiasFilterResult {
+  // ============= OBSERVER MODE =============
+  // Bias filter is disabled - only computes stats for logging/diagnostics
+  // Does NOT block any trades
+  
   const perf = calculateDirectionalPerformance(recentTrades);
   
-  // Check for catastrophic SHORT performance
-  if (proposedDirection === 'short' && 
-      perf.shortCount >= MIN_TRADES_FOR_BIAS && 
-      perf.shortWinRate < CATASTROPHIC_WIN_RATE) {
-    console.log(`[BIAS_FILTER] BLOCKED SHORT: win rate ${perf.shortWinRate.toFixed(0)}% catastrophic (${perf.shortCount} trades, $${perf.shortPnl.toFixed(0)})`);
-    return {
-      allowed: false,
-      reason: `SHORT blocked: ${perf.shortWinRate.toFixed(0)}% win rate (${perf.shortCount} trades)`,
-      biasDirection: 'long'
-    };
-  }
+  // Log observer mode stats for diagnostics
+  console.log(`[BIAS_FILTER_OBSERVER] ${proposedDirection.toUpperCase()} | LONG: ${perf.longWinRate.toFixed(0)}% (${perf.longCount} trades) | SHORT: ${perf.shortWinRate.toFixed(0)}% (${perf.shortCount} trades)`);
   
-  // Check for catastrophic LONG performance
-  if (proposedDirection === 'long' && 
-      perf.longCount >= MIN_TRADES_FOR_BIAS && 
-      perf.longWinRate < CATASTROPHIC_WIN_RATE) {
-    console.log(`[BIAS_FILTER] BLOCKED LONG: win rate ${perf.longWinRate.toFixed(0)}% catastrophic (${perf.longCount} trades, $${perf.longPnl.toFixed(0)})`);
-    return {
-      allowed: false,
-      reason: `LONG blocked: ${perf.longWinRate.toFixed(0)}% win rate (${perf.longCount} trades)`,
-      biasDirection: 'short'
-    };
-  }
-  
-  // Check regime-based blocking (only if regime is strong)
-  if (regime && regime.confidence > 0.6 && regime.trendStrength > REGIME_OVERRIDE_STRENGTH) {
-    if (proposedDirection === 'short' && regime.trendBias === 'bull') {
-      console.log(`[BIAS_FILTER] BLOCKED SHORT: against strong bullish regime (strength=${regime.trendStrength.toFixed(0)})`);
-      return {
-        allowed: false,
-        reason: `SHORT blocked: strong bullish regime`,
-        biasDirection: 'long'
-      };
-    }
-    if (proposedDirection === 'long' && regime.trendBias === 'bear') {
-      console.log(`[BIAS_FILTER] BLOCKED LONG: against strong bearish regime (strength=${regime.trendStrength.toFixed(0)})`);
-      return {
-        allowed: false,
-        reason: `LONG blocked: strong bearish regime`,
-        biasDirection: 'short'
-      };
-    }
-  }
-  
+  // ALWAYS allow - observer mode only
   return {
     allowed: true,
-    reason: 'Direction allowed',
+    reason: 'observer_mode',
     biasDirection: 'neutral'
   };
+  
+  // ============= ORIGINAL BLOCKING LOGIC (temporarily disabled) =============
+  // // Check for catastrophic SHORT performance
+  // if (proposedDirection === 'short' && 
+  //     perf.shortCount >= MIN_TRADES_FOR_BIAS && 
+  //     perf.shortWinRate < CATASTROPHIC_WIN_RATE) {
+  //   console.log(`[BIAS_FILTER] BLOCKED SHORT: win rate ${perf.shortWinRate.toFixed(0)}% catastrophic`);
+  //   return {
+  //     allowed: false,
+  //     reason: `SHORT blocked: ${perf.shortWinRate.toFixed(0)}% win rate`,
+  //     biasDirection: 'long'
+  //   };
+  // }
+  // 
+  // // Check for catastrophic LONG performance
+  // if (proposedDirection === 'long' && 
+  //     perf.longCount >= MIN_TRADES_FOR_BIAS && 
+  //     perf.longWinRate < CATASTROPHIC_WIN_RATE) {
+  //   console.log(`[BIAS_FILTER] BLOCKED LONG: win rate ${perf.longWinRate.toFixed(0)}% catastrophic`);
+  //   return {
+  //     allowed: false,
+  //     reason: `LONG blocked: ${perf.longWinRate.toFixed(0)}% win rate`,
+  //     biasDirection: 'short'
+  //   };
+  // }
+  // 
+  // // Check regime-based blocking (only if regime is strong)
+  // if (regime && regime.confidence > 0.6 && regime.trendStrength > REGIME_OVERRIDE_STRENGTH) {
+  //   if (proposedDirection === 'short' && regime.trendBias === 'bull') {
+  //     return { allowed: false, reason: `SHORT blocked: strong bullish regime`, biasDirection: 'long' };
+  //   }
+  //   if (proposedDirection === 'long' && regime.trendBias === 'bear') {
+  //     return { allowed: false, reason: `LONG blocked: strong bearish regime`, biasDirection: 'short' };
+  //   }
+  // }
+  // 
+  // return { allowed: true, reason: 'Direction allowed', biasDirection: 'neutral' };
 }
 
 

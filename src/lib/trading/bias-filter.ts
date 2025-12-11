@@ -120,61 +120,81 @@ export function applyBiasFilter(
   recentTrades: ClosedTrade[],
   openPositions: Position[]
 ): BiasFilterResult {
+  // ============= OBSERVER MODE =============
+  // Bias filter is disabled - only computes stats for logging/diagnostics
+  // Does NOT block any trades
+  // To re-enable blocking, uncomment the original logic below
+  
   const performance = calculateDirectionalPerformance(recentTrades);
   const bias = determineBias(regime, performance);
   
-  // If no bias established, allow everything
-  if (bias.direction === 'neutral') {
-    return {
-      allowed: true,
-      reason: 'No directional bias detected',
-      biasDirection: 'neutral',
-      confidence: 0
-    };
-  }
+  // Log observer mode stats for diagnostics
+  console.log(`[BIAS_FILTER_OBSERVER] Direction: ${proposedDirection} | Bias: ${bias.direction} | Source: ${bias.source}`);
   
-  // If proposed direction matches bias, allow
-  if (proposedDirection === bias.direction) {
-    return {
-      allowed: true,
-      reason: `Direction aligns with bias: ${bias.source}`,
-      biasDirection: bias.direction,
-      confidence: bias.confidence
-    };
-  }
-  
-  // Proposed direction is AGAINST bias - check severity
-  const isAgainstCatastrophic = 
-    (proposedDirection === 'short' && performance.shortWinRate < CATASTROPHIC_WIN_RATE && performance.shortCount >= MIN_TRADES_FOR_BIAS) ||
-    (proposedDirection === 'long' && performance.longWinRate < CATASTROPHIC_WIN_RATE && performance.longCount >= MIN_TRADES_FOR_BIAS);
-  
-  if (isAgainstCatastrophic) {
-    // HARD BLOCK - catastrophic performance in this direction
-    return {
-      allowed: false,
-      reason: `BLOCKED: ${proposedDirection.toUpperCase()} has catastrophic win rate (${proposedDirection === 'long' ? performance.longWinRate.toFixed(0) : performance.shortWinRate.toFixed(0)}%)`,
-      biasDirection: bias.direction,
-      confidence: bias.confidence
-    };
-  }
-  
-  // Soft block - against regime but not catastrophic
-  if (bias.confidence > 0.6) {
-    return {
-      allowed: false,
-      reason: `BLOCKED: ${proposedDirection.toUpperCase()} against strong bias: ${bias.source}`,
-      biasDirection: bias.direction,
-      confidence: bias.confidence
-    };
-  }
-  
-  // Weak bias - allow but log warning
+  // ALWAYS allow - observer mode only
   return {
     allowed: true,
-    reason: `Warning: ${proposedDirection.toUpperCase()} against weak bias: ${bias.source}`,
+    reason: `observer_mode: ${bias.source}`,
     biasDirection: bias.direction,
     confidence: bias.confidence
   };
+  
+  // ============= ORIGINAL BLOCKING LOGIC (temporarily disabled) =============
+  // const performance = calculateDirectionalPerformance(recentTrades);
+  // const bias = determineBias(regime, performance);
+  // 
+  // // If no bias established, allow everything
+  // if (bias.direction === 'neutral') {
+  //   return {
+  //     allowed: true,
+  //     reason: 'No directional bias detected',
+  //     biasDirection: 'neutral',
+  //     confidence: 0
+  //   };
+  // }
+  // 
+  // // If proposed direction matches bias, allow
+  // if (proposedDirection === bias.direction) {
+  //   return {
+  //     allowed: true,
+  //     reason: `Direction aligns with bias: ${bias.source}`,
+  //     biasDirection: bias.direction,
+  //     confidence: bias.confidence
+  //   };
+  // }
+  // 
+  // // Proposed direction is AGAINST bias - check severity
+  // const isAgainstCatastrophic = 
+  //   (proposedDirection === 'short' && performance.shortWinRate < CATASTROPHIC_WIN_RATE && performance.shortCount >= MIN_TRADES_FOR_BIAS) ||
+  //   (proposedDirection === 'long' && performance.longWinRate < CATASTROPHIC_WIN_RATE && performance.longCount >= MIN_TRADES_FOR_BIAS);
+  // 
+  // if (isAgainstCatastrophic) {
+  //   // HARD BLOCK - catastrophic performance in this direction
+  //   return {
+  //     allowed: false,
+  //     reason: `BLOCKED: ${proposedDirection.toUpperCase()} has catastrophic win rate`,
+  //     biasDirection: bias.direction,
+  //     confidence: bias.confidence
+  //   };
+  // }
+  // 
+  // // Soft block - against regime but not catastrophic
+  // if (bias.confidence > 0.6) {
+  //   return {
+  //     allowed: false,
+  //     reason: `BLOCKED: ${proposedDirection.toUpperCase()} against strong bias: ${bias.source}`,
+  //     biasDirection: bias.direction,
+  //     confidence: bias.confidence
+  //   };
+  // }
+  // 
+  // // Weak bias - allow but log warning
+  // return {
+  //   allowed: true,
+  //   reason: `Warning: ${proposedDirection.toUpperCase()} against weak bias: ${bias.source}`,
+  //   biasDirection: bias.direction,
+  //   confidence: bias.confidence
+  // };
 }
 
 /**
