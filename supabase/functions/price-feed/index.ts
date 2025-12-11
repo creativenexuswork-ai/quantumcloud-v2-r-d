@@ -6,10 +6,39 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-// ============= SUPPORTED PAIRS =============
-const CRYPTO_PAIRS = ['BTCUSD', 'ETHUSD', 'XRPUSD', 'SOLUSD', 'ADAUSD', 'BNBUSD', 'AVAXUSD'];
-const FOREX_PAIRS = ['EURUSD', 'GBPUSD', 'USDJPY', 'XAUUSD', 'AUDUSD', 'USDCHF'];
-const STOCK_SYMBOLS = ['TSLA', 'AAPL', 'NVDA', 'SPY', 'QQQ', 'META', 'MSFT'];
+// ============= TOP 10 CRYPTO MAJORS (HARDCODED - DO NOT CHANGE) =============
+// This is the ONLY source of tradeable symbols. NO forex, NO stocks.
+const TOP10_CRYPTO_FINNHUB = [
+  "BINANCE:BTCUSDT",
+  "BINANCE:ETHUSDT",
+  "BINANCE:BNBUSDT",
+  "BINANCE:SOLUSDT",
+  "BINANCE:XRPUSDT",
+  "BINANCE:ADAUSDT",
+  "BINANCE:DOGEUSDT",
+  "BINANCE:AVAXUSDT",
+  "BINANCE:DOTUSDT",
+  "BINANCE:MATICUSDT"
+] as const;
+
+// Display format (what the bot uses internally)
+const TOP10_CRYPTO_DISPLAY = [
+  "BTC/USD",
+  "ETH/USD",
+  "BNB/USD",
+  "SOL/USD",
+  "XRP/USD",
+  "ADA/USD",
+  "DOGE/USD",
+  "AVAX/USD",
+  "DOT/USD",
+  "MATIC/USD"
+] as const;
+
+// DEPRECATED - kept for type detection fallback only
+const CRYPTO_PAIRS = TOP10_CRYPTO_DISPLAY.map(s => s.replace('/', ''));
+const FOREX_PAIRS: string[] = []; // DISABLED
+const STOCK_SYMBOLS: string[] = []; // DISABLED
 
 // ============= TIMEFRAME MAP =============
 const TIMEFRAME_MAP: Record<string, string> = {
@@ -418,21 +447,22 @@ serve(async (req) => {
       // No body or invalid JSON - use defaults
     }
 
-    // Get active symbols from database with their types
-    let symbolTypeMap: Record<string, string> = {};
+    // HARDCODED: Only use TOP10 crypto - NO database dependency
+    // All symbols are crypto, no need for type mapping
+    const symbolTypeMap: Record<string, string> = {};
+    TOP10_CRYPTO_DISPLAY.forEach(s => { symbolTypeMap[s] = 'crypto'; });
     
+    // If no specific symbols requested, use all TOP10
     if (requestedSymbols.length === 0) {
-      const { data: dbSymbols } = await supabase
-        .from('symbols')
-        .select('symbol, type')
-        .eq('is_active', true);
-      
-      if (dbSymbols && dbSymbols.length > 0) {
-        requestedSymbols = dbSymbols.map(s => s.symbol);
-        dbSymbols.forEach(s => { symbolTypeMap[s.symbol] = s.type; });
-      } else {
-        requestedSymbols = [...CRYPTO_PAIRS, ...FOREX_PAIRS.slice(0, 3)];
-      }
+      requestedSymbols = [...TOP10_CRYPTO_DISPLAY];
+      console.log('[PRICE_FEED] Using hardcoded TOP10 crypto symbols');
+    } else {
+      // Filter requested symbols to only allow TOP10 crypto
+      requestedSymbols = requestedSymbols.filter(s => 
+        TOP10_CRYPTO_DISPLAY.includes(s as any) || 
+        CRYPTO_PAIRS.includes(s.replace('/', ''))
+      );
+      console.log(`[PRICE_FEED] Filtered to ${requestedSymbols.length} valid crypto symbols`);
     }
     
     console.log(`[PRICE_FEED] Fetching ${requestedSymbols.length} symbols at ${timeframe}`);
