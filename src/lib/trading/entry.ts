@@ -249,18 +249,19 @@ export function evaluateEntry(
     };
   }
   
-  // Check 8.5: DIRECTIONAL BIAS FILTER (CRITICAL)
+  // Check 8.5: DIRECTIONAL BIAS FILTER (OBSERVER MODE - does not block)
   const biasResult = applyBiasFilter(edge.edgeDirection, regime, recentTrades, positions);
-  if (!biasResult.allowed) {
-    return {
-      shouldEnter: false,
-      entryDirection: null,
-      entryProfile: mapModeToProfile(modePersonality),
-      suggestedEntryZone: null,
-      reason: biasResult.reason,
-      confidence: 0
-    };
-  }
+  // OBSERVER MODE: bias filter logs stats but does not block entries
+  // if (!biasResult.allowed) {
+  //   return {
+  //     shouldEnter: false,
+  //     entryDirection: null,
+  //     entryProfile: mapModeToProfile(modePersonality),
+  //     suggestedEntryZone: null,
+  //     reason: biasResult.reason,
+  //     confidence: 0
+  //   };
+  // }
   
   // Check 9: Position limits
   const modePositions = getPositionCountByMode(positions, modePersonality);
