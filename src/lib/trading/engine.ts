@@ -485,3 +485,4 @@ export { updateThermostat, type ThermostatState } from './thermostat';
 export { analyzeSession } from './session-brain';
 export { routeMarkets } from './router';
 export { buildOrderRequest, executeOrder } from './execution';
+export { resetEngine, onSessionEnd, type RunEndReason, type ResetEngineOptions, type ResetEngineResult } from './resetEngine';
