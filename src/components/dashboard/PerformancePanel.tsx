@@ -65,6 +65,56 @@ export function PerformancePanel() {
     }
   };
 
+  const handleResetOnly = async () => {
+    if (botRunning || isResetting) return;
+
+    const v = Number(startingBalanceInput);
+    if (!v || v <= 0 || Number.isNaN(v)) {
+      toast({ title: 'Invalid Amount', description: 'Enter a valid positive number.', variant: 'destructive' });
+      return;
+    }
+
+    setIsResetting(true);
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) throw new Error('Not authenticated');
+
+      // Close all open positions
+      await supabase.from('paper_positions').delete().eq('user_id', user.id);
+
+      // Clear today's trades
+      const today = new Date().toISOString().split('T')[0];
+      await supabase.from('paper_trades').delete().eq('user_id', user.id).eq('session_date', today);
+
+      // Reset paper_stats_daily for today using current input value
+      await supabase.from('paper_stats_daily').upsert({
+        user_id: user.id,
+        trade_date: today,
+        equity_start: v,
+        equity_end: v,
+        pnl: 0,
+        win_rate: 0,
+        trades_count: 0,
+        max_drawdown: 0,
+      }, { onConflict: 'user_id,trade_date' });
+
+      // Set session to idle
+      await supabase.from('paper_config').update({
+        is_running: false,
+        session_status: 'idle',
+      } as any).eq('user_id', user.id);
+
+      setStatus('idle');
+      queryClient.invalidateQueries({ queryKey: ['paper-stats'] });
+      toast({ title: 'Stats Reset', description: 'Balance & stats reset.' });
+    } catch (error) {
+      console.error('Reset error:', error);
+      toast({ title: 'Error', description: 'Failed to reset stats', variant: 'destructive' });
+    } finally {
+      setIsResetting(false);
+    }
+  };
+
   // Generate dummy sparkline data
   const sparklineData = Array.from({ length: 20 }, (_, i) => {
     const base = todayPnl * (i / 20);
@@ -162,6 +212,13 @@ export function PerformancePanel() {
           disabled={botRunning || isResetting}
         >
           {isResetting ? 'Resetting...' : 'Set Balance'}
+        </button>
+        <button
+          className="bg-muted/30 border border-border/50 px-3 py-2 rounded-lg text-xs font-medium text-foreground/85 transition-all hover:bg-muted/50 disabled:opacity-35 disabled:cursor-not-allowed"
+          onClick={handleResetOnly}
+          disabled={botRunning || isResetting}
+        >
+          Reset
         </button>
       </div>
       <hr className="border-0 border-t border-border/30 my-3" />
