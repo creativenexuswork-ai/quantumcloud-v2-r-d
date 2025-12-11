@@ -63,6 +63,8 @@ export function useSessionActions() {
   }, []);
 
   // Fast P&L refresh - just fetches stats, no trade execution
+  // TODO: Re-enable halt signal after engine stabilisation
+  // TEMPORARY: UI halt signal disabled for debugging - halted state is ignored
   const refreshPnl = useCallback(async () => {
     const pendingAction = useSessionStore.getState().pendingAction;
     if (pendingAction) return; // Skip during pending actions
@@ -86,6 +88,8 @@ export function useSessionActions() {
           openCount: stats.stats.openPositionsCount || 0,
         });
       }
+      // TEMPORARY: halt signal check disabled for debugging
+      // if (stats?.halted) { dispatch({ type: 'SET_HALTED', halted: true }); }
     } catch (error) {
       // Silent fail for P&L refresh - non-critical
     }
