@@ -5,6 +5,7 @@ import { cn } from '@/lib/utils';
 import { useQueryClient } from '@tanstack/react-query';
 import { toast } from '@/hooks/use-toast';
 import { resetEngine } from '@/lib/trading/resetEngine';
+import { handleSessionEnd as handleSessionEndRuntime } from '@/lib/trading/resetSession';
 
 export function PerformancePanel() {
   const { equity, todayPnl, todayPnlPercent, tradesToday, winRate, status, setStatus } = useFullSessionState();
@@ -26,6 +27,10 @@ export function PerformancePanel() {
 
     setIsResetting(true);
     try {
+      // Reset runtime state first
+      handleSessionEndRuntime('manual_reset', false);
+      
+      // Then reset database state with new balance
       const result = await resetEngine({
         reason: 'set_balance',
         keepRunning: false,
@@ -52,6 +57,10 @@ export function PerformancePanel() {
 
     setIsResetting(true);
     try {
+      // Reset runtime state first
+      handleSessionEndRuntime('manual_reset', false);
+      
+      // Then reset database state
       const result = await resetEngine({
         reason: 'manual_reset',
         keepRunning: false,
