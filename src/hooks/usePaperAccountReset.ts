@@ -3,12 +3,14 @@
  * 
  * Hook to reset the paper account to default state (10k balance).
  * Resets paper_config, paper_stats_daily, and closes all paper_positions.
+ * After DB updates, forces UI to re-sync with fresh data.
  */
 
-import { useState } from 'react';
+import { useState, useCallback } from 'react';
 import { supabase } from '@/integrations/supabase/client';
 import { useQueryClient } from '@tanstack/react-query';
 import { toast } from '@/hooks/use-toast';
+import { useSessionStore } from '@/lib/state/sessionMachine';
 
 export interface PaperAccountResetResult {
   success: boolean;
@@ -18,8 +20,9 @@ export interface PaperAccountResetResult {
 export function usePaperAccountReset() {
   const [isResetting, setIsResetting] = useState(false);
   const queryClient = useQueryClient();
+  const dispatch = useSessionStore((state) => state.dispatch);
 
-  const resetPaperAccount = async (): Promise<PaperAccountResetResult> => {
+  const resetPaperAccount = useCallback(async (): Promise<PaperAccountResetResult> => {
     setIsResetting(true);
     
     try {
@@ -82,12 +85,45 @@ export function usePaperAccountReset() {
       }
       console.log('[PaperAccountReset] paper_positions closed');
 
-      // 4. Invalidate all relevant queries to refresh UI
+      // ============================================
+      // FORCE UI REFRESH SEQUENCE
+      // ============================================
+      
+      // 4. Invalidate and refetch paper stats (forces fresh data fetch)
+      console.log('[PaperAccountReset] Forcing UI refresh...');
       await queryClient.invalidateQueries({ queryKey: ['paper-stats'] });
       await queryClient.invalidateQueries({ queryKey: ['paper-config'] });
       await queryClient.invalidateQueries({ queryKey: ['paper-positions'] });
+      
+      // Force immediate refetch to get fresh data
+      await queryClient.refetchQueries({ queryKey: ['paper-stats'] });
+      
+      // 5. Reset UI session state via dispatcher
+      // RESET: Clear all session state to initial values
+      dispatch({ type: 'RESET' });
+      
+      // 6. Sync UI with fresh equity value (10k)
+      dispatch({ 
+        type: 'SYNC_PNL', 
+        pnlToday: 0, 
+        tradesToday: 0, 
+        winRate: 0, 
+        equity: 10000 
+      });
+      
+      // 7. Clear halted flag
+      dispatch({ type: 'SET_HALTED', halted: false });
+      
+      // 8. Clear any pending actions
+      dispatch({ type: 'SET_PENDING_ACTION', pendingAction: null });
+      
+      // 9. Sync positions (none open after reset)
+      dispatch({ type: 'SYNC_POSITIONS', hasPositions: false, openCount: 0 });
+      
+      // 10. Sync status to idle
+      dispatch({ type: 'SYNC_STATUS', status: 'idle' });
 
-      console.log('[PaperAccountReset] Full account reset complete');
+      console.log('[PaperAccountReset] Full account reset complete - UI refreshed');
 
       toast({
         title: 'Paper Account Reset',
@@ -109,7 +145,7 @@ export function usePaperAccountReset() {
     } finally {
       setIsResetting(false);
     }
-  };
+  }, [queryClient, dispatch]);
 
   return {
     resetPaperAccount,
