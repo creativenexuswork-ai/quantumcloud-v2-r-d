@@ -184,6 +184,7 @@ serve(async (req) => {
       ? 'running' 
       : burstPnlPercent >= burstConfig.dailyProfitTargetPercent ? 'locked' : 'idle';
 
+    // Soft-mode: still report halted for analytics, but client won't enforce it
     // Halted check - in reset state, never halted
     const isHalted = isResetState ? false : (todayPnlPercent <= -riskConfig.maxDailyLossPercent || config?.trading_halted_for_day);
     const sessionStatus = config?.session_status || 'idle';

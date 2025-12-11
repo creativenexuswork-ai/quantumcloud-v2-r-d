@@ -37,10 +37,12 @@ export function useSessionSync() {
       });
     }
 
-    // Sync halted state from backend
+    // Soft-mode: keep halted in state for analytics only
+    // UI remains active regardless of halted
     if (paperData.halted !== undefined) {
       dispatch({ type: 'SET_HALTED', halted: paperData.halted });
     }
+    // Note: halted is tracked but not enforced in soft-mode
 
     // Sync session status from backend (for terminal states)
     const backendStatus = paperData.sessionStatus;

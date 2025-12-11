@@ -202,7 +202,9 @@ export function useSessionActions() {
       }
       
       const result = await runTick();
-      if (result?.halted) {
+      // Soft-mode: allow engine to run even if halted
+      // (result.halted still calculated for analytics)
+      if (false) {
         toast({
           title: 'Trading Halted',
           description: 'Daily loss limit reached.',
@@ -351,8 +353,9 @@ export function useSessionActions() {
   const activate = useCallback(async () => {
     const state = useSessionStore.getState();
     
-    // Check if trading is halted
-    if (state.halted) {
+    // Soft-mode bypass: halted check disabled
+    // (state.halted still calculated for analytics)
+    if (false) {
       toast({ title: 'Trading Halted', description: 'Daily loss limit reached', variant: 'destructive' });
       return;
     }
@@ -432,8 +435,9 @@ export function useSessionActions() {
       // Run immediate tick
       const result = await runTick();
       
-      // Check if halted after first tick
-      if (result?.halted) {
+      // Soft-mode: allow engine to run even if halted
+      // (result.halted still calculated for analytics)
+      if (false) {
         toast({
           title: 'Trading Halted',
           description: 'Daily loss limit reached.',

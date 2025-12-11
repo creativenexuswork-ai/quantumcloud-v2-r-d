@@ -31,7 +31,8 @@ export function LiveStateCard() {
       <CardHeader className="pb-2">
         <div className="flex items-center justify-between">
           <CardTitle className="text-lg font-semibold">Live State & Mode</CardTitle>
-          {halted && (
+          {/* Soft-mode: halt banner hidden */}
+          {false && halted && (
             <Badge variant="destructive">Trading Halted</Badge>
           )}
         </div>
@@ -92,7 +93,7 @@ export function LiveStateCard() {
         <div className="flex gap-2 pt-2">
           <Button 
             onClick={startSession}
-            disabled={isRunning || halted || enabledModes.length === 0}
+            disabled={isRunning || enabledModes.length === 0}
             className="flex-1 gap-2"
           >
             {tickInFlight ? (

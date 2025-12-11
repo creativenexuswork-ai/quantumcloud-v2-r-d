@@ -276,7 +276,9 @@ export function useTradingSession() {
       if (statusRef.current !== 'running' && statusRef.current !== 'holding') return;
       
       const tickResult = await runTickInternal();
-      if (tickResult?.halted) {
+      // Soft-mode: allow engine to run even if halted
+      // (tickResult.halted still calculated for analytics)
+      if (false) {
         toast({
           title: 'Trading Halted',
           description: 'Daily loss limit reached.',
@@ -290,7 +292,9 @@ export function useTradingSession() {
 
   // Start session - begin trading
   const startSession = useCallback(async () => {
-    if (halted || status === 'running') return;
+    // Soft-mode bypass: halted check disabled
+    if (false && halted) return;
+    if (status === 'running') return;
     
     try {
       const { data: { user } } = await supabase.auth.getUser();
@@ -315,7 +319,9 @@ export function useTradingSession() {
       // Run immediate tick
       const result = await runTickInternal();
       
-      if (result?.halted) {
+      // Soft-mode: allow engine to run even if halted
+      // (result.halted still calculated for analytics)
+      if (false) {
         toast({
           title: 'Trading Halted',
           description: 'Daily loss limit reached.',
