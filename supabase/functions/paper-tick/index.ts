@@ -7,6 +7,10 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
+// ============== TESTING FLAG ==============
+// TODO: Set back to false when finished debugging daily halt behavior
+const DISABLE_DAILY_HALT_FOR_TESTING = true;
+
 // ============== Default Configs ==============
 
 const DEFAULT_RISK_CONFIG = {
@@ -1138,10 +1142,11 @@ serve(async (req) => {
     const wins = (todayTrades || []).filter((t: any) => Number(t.realized_pnl) > 0).length;
     const winRate = closedCount > 0 ? (wins / closedCount) * 100 : 50;
 
-    // Check daily loss limit
+    // Check daily loss limit (calculation always runs)
     const isHalted = currentPnlPercent <= -riskConfig.maxDailyLossPercent;
     
-    if (isHalted && !config.trading_halted_for_day) {
+    // ENFORCEMENT: Only trigger halt actions if flag is OFF
+    if (isHalted && !config.trading_halted_for_day && !DISABLE_DAILY_HALT_FOR_TESTING) {
       await supabase.from('system_logs').insert({
         user_id: userId, level: 'error', source: 'risk',
         message: `RISK: Trading HALTED - Daily loss limit of ${riskConfig.maxDailyLossPercent}% reached`,
@@ -1166,6 +1171,8 @@ serve(async (req) => {
       await supabase.from('paper_config').update({ 
         trading_halted_for_day: true, session_status: 'idle', is_running: false 
       }).eq('user_id', userId);
+    } else if (isHalted && DISABLE_DAILY_HALT_FOR_TESTING) {
+      console.log('[TEST MODE] Daily halt would have triggered here - skipping enforcement');
     }
 
     // Handle take burst profit
@@ -1253,7 +1260,9 @@ serve(async (req) => {
     const freshSessionStatus: SessionStatus = freshConfig?.session_status || 'idle';
     const freshIsRunning = freshConfig?.is_running ?? false;
     
-    const shouldRunModes = freshSessionStatus === 'running' && freshIsRunning && !isHalted && !config.trading_halted_for_day;
+    // In test mode, ignore halt flags for shouldRunModes
+    const haltBlocksTrading = DISABLE_DAILY_HALT_FOR_TESTING ? false : (isHalted || config.trading_halted_for_day);
+    const shouldRunModes = freshSessionStatus === 'running' && freshIsRunning && !haltBlocksTrading;
     
     console.log(`[ENGINE] status=${freshSessionStatus}, running=${freshIsRunning}, shouldRunModes=${shouldRunModes}, positions=${(finalPositions || []).length}`);
     

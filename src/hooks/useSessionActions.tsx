@@ -11,6 +11,10 @@ const TICK_INTERVAL_MS = 2000;   // 2s between ticks
 const PNL_REFRESH_MS = 300;      // 0.3s PnL refresh
 const AUTO_TP_CHECK_MS = 5000;   // 5s Auto-TP check (unchanged)
 
+// ============== TESTING FLAG ==============
+// TODO: Set back to false when finished debugging daily halt behavior
+const DISABLE_DAILY_HALT_FOR_TESTING = true;
+
 // Map UI mode to backend mode
 const MODE_TO_BACKEND: Record<TradingMode, string> = {
   burst: 'burst',
@@ -138,8 +142,8 @@ export function useSessionActions() {
       
       const data = await response.json();
       
-      // Sync halted state
-      if (data.halted !== undefined) {
+      // Sync halted state (skip in test mode to prevent UI blocking)
+      if (data.halted !== undefined && !DISABLE_DAILY_HALT_FOR_TESTING) {
         dispatch({ type: 'SET_HALTED', halted: data.halted });
       }
       
