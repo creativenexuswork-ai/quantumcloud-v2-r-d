@@ -125,9 +125,8 @@ export async function resetEngine(opts?: ResetEngineOptions): Promise<ResetEngin
       .update({
         is_running: keepRunning,
         session_status: newStatus,
-        session_started_at: newSessionStartedAt, // Reset session start time for new run
-        trading_halted_for_day: false, // Clear any halt flags
-        burst_requested: false, // Clear burst request flag
+        session_started_at: newSessionStartedAt,
+        burst_requested: false,
         updated_at: new Date().toISOString(),
       } as any)
       .eq('user_id', userId);

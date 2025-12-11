@@ -5,7 +5,6 @@ import { useSessionStore } from '@/lib/state/sessionMachine';
 /**
  * Hook to sync session data from backend paper-stats polling.
  * Syncs P&L, positions, and session status.
- * NOTE: Halted state removed - daily loss is now a metric only.
  */
 export function useSessionSync() {
   const { data: paperData, refetch } = usePaperStats();

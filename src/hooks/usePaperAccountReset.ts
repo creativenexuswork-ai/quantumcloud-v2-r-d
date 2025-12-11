@@ -43,7 +43,6 @@ export function usePaperAccountReset() {
         .update({
           session_status: 'idle',
           is_running: false,
-          trading_halted_for_day: false,
           burst_requested: false,
           session_started_at: null,
           updated_at: new Date().toISOString(),
