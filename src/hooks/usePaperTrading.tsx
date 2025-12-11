@@ -457,6 +457,20 @@ export function useTradingSession() {
       const { data: { session: currentSession } } = await supabase.auth.getSession();
       if (!currentSession?.access_token) return;
       
+      // First, fetch the autoTpStopAfterHit setting from paper_config
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+      
+      const { data: config } = await supabase
+        .from('paper_config')
+        .select('burst_config')
+        .eq('user_id', user.id)
+        .single();
+      
+      // Default to stopping after TP if setting not found
+      const burstConfig = config?.burst_config as { autoTpStopAfterHit?: boolean } | null;
+      const stopAfterHit = burstConfig?.autoTpStopAfterHit ?? true;
+      
       const response = await fetch(`${SUPABASE_URL}/functions/v1/paper-tick`, {
         method: 'POST',
         headers: { 
@@ -467,8 +481,10 @@ export function useTradingSession() {
       });
       
       if (response.ok) {
-        // Dispatch SESSION_END for auto_tp to reset runtime state and continue
-        await dispatchSessionEnd('auto_tp', true);
+        // Dispatch SESSION_END for auto_tp
+        // autoRestart = true when stopAfterHit = false (continuous mode)
+        // autoRestart = false when stopAfterHit = true (stop after TP)
+        await dispatchSessionEnd('auto_tp', !stopAfterHit);
       }
       
       toast({ title: 'Burst Profit Taken' });
