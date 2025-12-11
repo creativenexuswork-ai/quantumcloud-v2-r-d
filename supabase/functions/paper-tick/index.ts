@@ -1254,8 +1254,9 @@ serve(async (req) => {
     const freshSessionStatus: SessionStatus = freshConfig?.session_status || 'idle';
     const freshIsRunning = freshConfig?.is_running ?? false;
     
-    // Check if halt blocks trading
-    const haltBlocksTrading = isHalted || config.trading_halted_for_day;
+    // Soft-mode: tick continues even if halted
+    // (isHalted still calculated for analytics)
+    const haltBlocksTrading = false; // Original: isHalted || config.trading_halted_for_day
     const shouldRunModes = freshSessionStatus === 'running' && freshIsRunning && !haltBlocksTrading;
     
     console.log(`[ENGINE] status=${freshSessionStatus}, running=${freshIsRunning}, shouldRunModes=${shouldRunModes}, positions=${(finalPositions || []).length}`);
