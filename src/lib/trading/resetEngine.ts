@@ -100,6 +100,8 @@ export async function resetEngine(opts?: ResetEngineOptions): Promise<ResetEngin
     }
 
     // 5) Update session status in paper_config
+    // CRITICAL: Only go to 'idle' if NOT keeping running (stopAfterTP = true or manual reset)
+    // If keepRunning = true (continuous mode), stay 'running'
     const newStatus = keepRunning ? 'running' : 'idle';
     const { error: configError } = await supabase
       .from('paper_config')

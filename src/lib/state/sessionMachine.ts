@@ -233,14 +233,22 @@ export function transitionSession(state: SessionState, action: SessionAction): S
       };
     
     case 'END_RUN':
-      // End current run - no new trades allowed until next START_RUN
-      // ALWAYS transition to idle regardless of reason (auto_tp, manual_stop, close_all)
+      // End current run - behavior depends on reason and autoTpStopAfterHit setting
+      // auto_tp with stopAfterHit=false → stay running (continuous mode)
+      // auto_tp with stopAfterHit=true → go idle
+      // manual_stop, close_all → always go idle
+      const shouldStayRunning = action.reason === 'auto_tp' && !state.autoTpStopAfterHit;
       return {
         ...state,
-        runActive: false,
+        runActive: shouldStayRunning, // Keep active for continuous mode
         // Clear run ID only on close_all (full reset)
         runId: action.reason === 'close_all' ? null : state.runId,
-        status: 'idle',
+        // Only go idle if NOT in continuous mode or if it's a manual action
+        status: shouldStayRunning ? 'running' : 'idle',
+        // Reset autoTpFired for next cycle in continuous mode
+        autoTpFired: shouldStayRunning ? false : state.autoTpFired,
+        // Update baseline for next TP target in continuous mode
+        autoTpBaselineEquity: shouldStayRunning ? state.equity : state.autoTpBaselineEquity,
       };
     
     case 'SET_AUTO_TP_FIRED':
