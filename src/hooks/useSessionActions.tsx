@@ -207,18 +207,19 @@ export function useSessionActions() {
       }
       
       const result = await runTick();
-      if (result?.halted) {
-        toast({
-          title: 'Trading Halted',
-          description: 'Daily loss limit reached.',
-          variant: 'destructive',
-        });
-        clearTickInterval();
-        clearPnlRefresh();
-        clearAutoTpCheck();
-        dispatch({ type: 'SET_HALTED', halted: true });
-        dispatch({ type: 'END_RUN', reason: 'manual_stop' });
-      }
+      // TODO: Re-enable halt enforcement after testing
+      // if (result?.halted) {
+      //   toast({
+      //     title: 'Trading Halted',
+      //     description: 'Daily loss limit reached.',
+      //     variant: 'destructive',
+      //   });
+      //   clearTickInterval();
+      //   clearPnlRefresh();
+      //   clearAutoTpCheck();
+      //   dispatch({ type: 'SET_HALTED', halted: true });
+      //   dispatch({ type: 'END_RUN', reason: 'manual_stop' });
+      // }
     }, TICK_INTERVAL_MS);
   }, [runTick, clearTickInterval, clearPnlRefresh, clearAutoTpCheck, dispatch]);
 

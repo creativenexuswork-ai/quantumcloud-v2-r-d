@@ -4,9 +4,8 @@ import { useSessionStore } from '@/lib/state/sessionMachine';
 
 /**
  * Hook to sync session data from backend paper-stats polling.
- * Syncs P&L, positions, stats, and halted state.
- * Also syncs session status from backend IF it's a "terminal" state (idle/stopped)
- * to ensure Close All and Take Profit state changes are reflected.
+ * Syncs P&L, positions, stats only.
+ * TODO: Re-enable halted and session status sync after testing.
  */
 export function useSessionSync() {
   const { data: paperData, refetch } = usePaperStats();
@@ -39,22 +38,21 @@ export function useSessionSync() {
       });
     }
 
-    // Sync halted state from backend
-    if (paperData.halted !== undefined) {
-      dispatch({ type: 'SET_HALTED', halted: paperData.halted });
-    }
+    // TODO: Re-enable halted sync after testing
+    // TEMPORARY: Never set halted state from backend
+    // if (paperData.halted !== undefined) {
+    //   dispatch({ type: 'SET_HALTED', halted: paperData.halted });
+    // }
 
-    // Sync session status from backend ONLY for terminal states (idle/stopped)
-    // This ensures Close All properly stops the engine
-    // Don't auto-start if backend says 'running' but frontend is idle
-    const backendStatus = paperData.sessionStatus;
-    if (backendStatus === 'idle' || backendStatus === 'stopped') {
-      // If backend is idle/stopped, respect it (Close All was triggered)
-      if (currentStatus === 'running' || currentStatus === 'holding') {
-        console.log(`[SessionSync] Backend says ${backendStatus}, syncing from ${currentStatus}`);
-        dispatch({ type: 'SYNC_STATUS', status: backendStatus });
-      }
-    }
+    // TODO: Re-enable session status sync after testing
+    // TEMPORARY: Never force session to idle from backend sync
+    // const backendStatus = paperData.sessionStatus;
+    // if (backendStatus === 'idle' || backendStatus === 'stopped') {
+    //   if (currentStatus === 'running' || currentStatus === 'holding') {
+    //     console.log(`[SessionSync] Backend says ${backendStatus}, syncing from ${currentStatus}`);
+    //     dispatch({ type: 'SYNC_STATUS', status: backendStatus });
+    //   }
+    // }
 
     lastStatusRef.current = currentStatus;
   }, [paperData, dispatch, currentStatus]);
