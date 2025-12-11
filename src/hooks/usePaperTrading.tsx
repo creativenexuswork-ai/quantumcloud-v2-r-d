@@ -1,6 +1,6 @@
 import React, { useEffect, useCallback, useRef, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { supabase } from '@/integrations/supabase/client';
+import { supabase, getAuthSession } from '@/integrations/supabase/client';
 import { useAuth } from './useAuth';
 import { toast } from './use-toast';
 import { useSession, SessionStatus } from '@/lib/state/session';
@@ -13,6 +13,19 @@ import {
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const TICK_INTERVAL_MS = 2000;
 const STATS_REFRESH_MS = 600; // P&L refresh every 600ms for faster updates
+
+/**
+ * Handle 401 responses from Edge Functions - logs and notifies user without touching engine logic.
+ */
+function handle401Response(endpoint: string): never {
+  console.warn(`QuantumCloud auth expired – 401 from ${endpoint}`);
+  toast({
+    title: 'Session Expired',
+    description: 'Please log out and log back in to continue.',
+    variant: 'destructive',
+  });
+  throw new Error('AUTH_EXPIRED');
+}
 
 export interface PaperStats {
   equity: number;
@@ -90,15 +103,18 @@ export function usePaperStats() {
   return useQuery({
     queryKey: ['paper-stats'],
     queryFn: async () => {
-      const { data: { session: currentSession } } = await supabase.auth.getSession();
-      if (!currentSession?.access_token) throw new Error('Not authenticated');
+      const session = await getAuthSession();
 
       const response = await fetch(`${SUPABASE_URL}/functions/v1/paper-stats`, {
         headers: {
-          Authorization: `Bearer ${currentSession.access_token}`,
+          Authorization: `Bearer ${session.access_token}`,
           'Content-Type': 'application/json',
         },
       });
+
+      if (response.status === 401) {
+        handle401Response('paper-stats');
+      }
 
       if (!response.ok) {
         console.error('Paper stats fetch failed:', response.status, response.statusText);
@@ -149,8 +165,7 @@ export function usePaperTick() {
       globalClose?: boolean;
       takeBurstProfit?: boolean;
     }) => {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session?.access_token) throw new Error('Not authenticated');
+      const session = await getAuthSession();
 
       const response = await fetch(`${SUPABASE_URL}/functions/v1/paper-tick`, {
         method: 'POST',
@@ -160,6 +175,10 @@ export function usePaperTick() {
         },
         body: JSON.stringify(options || {}),
       });
+
+      if (response.status === 401) {
+        handle401Response('paper-tick');
+      }
 
       if (!response.ok) throw new Error('Failed to run tick');
       return response.json();
@@ -199,19 +218,22 @@ export function useTradingSession() {
     setTickInFlight(true);
     
     try {
-      const { data: { session: currentSession } } = await supabase.auth.getSession();
-      if (!currentSession?.access_token) {
-        return null;
-      }
+      const session = await getAuthSession();
 
       const response = await fetch(`${SUPABASE_URL}/functions/v1/paper-tick`, {
         method: 'POST',
         headers: {
-          Authorization: `Bearer ${currentSession.access_token}`,
+          Authorization: `Bearer ${session.access_token}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({}),
       });
+
+      if (response.status === 401) {
+        console.warn('QuantumCloud auth expired – 401 from paper-tick (tick loop)');
+        // Don't show toast here to avoid spam during tick loop, just return null
+        return null;
+      }
 
       if (!response.ok) {
         console.error('Tick failed:', response.status);
@@ -230,7 +252,10 @@ export function useTradingSession() {
 
       return { halted: data.halted || false, sessionStatus: data.sessionStatus || 'idle' };
     } catch (error) {
-      console.error('Tick error:', error);
+      // Don't log AUTH errors as they're handled above
+      if (error instanceof Error && !error.message.startsWith('AUTH_')) {
+        console.error('Tick error:', error);
+      }
       return null;
     } finally {
       tickInFlightRef.current = false;
@@ -430,17 +455,20 @@ export function useTradingSession() {
   // Trigger burst mode
   const triggerBurst = useCallback(async () => {
     try {
-      const { data: { session: currentSession } } = await supabase.auth.getSession();
-      if (!currentSession?.access_token) return;
+      const session = await getAuthSession();
       
       const response = await fetch(`${SUPABASE_URL}/functions/v1/paper-tick`, {
         method: 'POST',
         headers: { 
-          Authorization: `Bearer ${currentSession.access_token}`, 
+          Authorization: `Bearer ${session.access_token}`, 
           'Content-Type': 'application/json' 
         },
         body: JSON.stringify({ burstRequested: true }),
       });
+      
+      if (response.status === 401) {
+        handle401Response('paper-tick');
+      }
       
       if (response.ok) {
         queryClient.invalidateQueries({ queryKey: ['paper-stats'] });
@@ -454,10 +482,9 @@ export function useTradingSession() {
   // Take burst profit - triggers SESSION_END after closing positions
   const takeBurstProfit = useCallback(async () => {
     try {
-      const { data: { session: currentSession } } = await supabase.auth.getSession();
-      if (!currentSession?.access_token) return;
+      const session = await getAuthSession();
       
-      // First, fetch the autoTpStopAfterHit setting from paper_config
+      // Fetch the autoTpStopAfterHit setting from paper_config
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
       
@@ -474,11 +501,15 @@ export function useTradingSession() {
       const response = await fetch(`${SUPABASE_URL}/functions/v1/paper-tick`, {
         method: 'POST',
         headers: { 
-          Authorization: `Bearer ${currentSession.access_token}`, 
+          Authorization: `Bearer ${session.access_token}`, 
           'Content-Type': 'application/json' 
         },
         body: JSON.stringify({ takeBurstProfit: true }),
       });
+      
+      if (response.status === 401) {
+        handle401Response('paper-tick');
+      }
       
       if (response.ok) {
         // Dispatch SESSION_END for auto_tp
@@ -497,18 +528,20 @@ export function useTradingSession() {
   // Global close - close all positions and stop session using centralized reset
   const globalClose = useCallback(async () => {
     try {
-      // First call paper-tick with globalClose to close positions on backend
-      const { data: { session: currentSession } } = await supabase.auth.getSession();
-      if (!currentSession?.access_token) return;
+      const session = await getAuthSession();
       
       const response = await fetch(`${SUPABASE_URL}/functions/v1/paper-tick`, {
         method: 'POST',
         headers: { 
-          Authorization: `Bearer ${currentSession.access_token}`, 
+          Authorization: `Bearer ${session.access_token}`, 
           'Content-Type': 'application/json' 
         },
         body: JSON.stringify({ globalClose: true }),
       });
+      
+      if (response.status === 401) {
+        handle401Response('paper-tick');
+      }
       
       if (response.ok) {
         // Stop the session after global close
