@@ -82,9 +82,7 @@ export function useSessionActions() {
           openCount: stats.stats.openPositionsCount || 0,
         });
       }
-      if (stats?.halted) {
-        dispatch({ type: 'SET_HALTED', halted: true });
-      }
+      // Halted state removed - daily loss is metric only
     } catch (error) {
       // Silent fail for P&L refresh - non-critical
     }
@@ -141,10 +139,7 @@ export function useSessionActions() {
       
       const data = await response.json();
       
-      // Sync halted state
-      if (data.halted !== undefined) {
-        dispatch({ type: 'SET_HALTED', halted: data.halted });
-      }
+      // Halted state removed - daily loss is metric only
       
       // Sync session status from backend
       if (data.sessionStatus) {
@@ -201,21 +196,8 @@ export function useSessionActions() {
         return;
       }
       
-      const result = await runTick();
-      // Soft-mode: allow engine to run even if halted
-      // (result.halted still calculated for analytics)
-      if (false) {
-        toast({
-          title: 'Trading Halted',
-          description: 'Daily loss limit reached.',
-          variant: 'destructive',
-        });
-        clearTickInterval();
-        clearPnlRefresh();
-        clearAutoTpCheck();
-        dispatch({ type: 'SET_HALTED', halted: true });
-        dispatch({ type: 'END_RUN', reason: 'manual_stop' });
-      }
+      await runTick();
+      // Daily loss no longer halts engine - continues trading
     }, TICK_INTERVAL_MS);
   }, [runTick, clearTickInterval, clearPnlRefresh, clearAutoTpCheck, dispatch]);
 
@@ -434,24 +416,7 @@ export function useSessionActions() {
 
       // Run immediate tick
       const result = await runTick();
-      
-      // Soft-mode: allow engine to run even if halted
-      // (result.halted still calculated for analytics)
-      if (false) {
-        toast({
-          title: 'Trading Halted',
-          description: 'Daily loss limit reached.',
-          variant: 'destructive',
-        });
-        await supabase.from('paper_config').update({
-          is_running: false,
-          session_status: 'idle',
-        } as any).eq('user_id', user.id);
-        dispatch({ type: 'SET_HALTED', halted: true });
-        dispatch({ type: 'END_RUN', reason: 'manual_stop' });
-        dispatch({ type: 'SET_PENDING_ACTION', pendingAction: null });
-        return;
-      }
+      // Daily loss no longer halts engine - continues trading
       
       // Start intervals
       startTickInterval();

@@ -22,7 +22,6 @@ export interface SessionState {
   winRate: number;
   equity: number;
   lastError: string | null;
-  halted: boolean;
   // pendingAction: set only during user-initiated transitions (not polling)
   pendingAction: PendingAction;
   
@@ -38,6 +37,9 @@ export interface SessionState {
   autoTpMode: AutoTpMode;         // 'off' | 'percent' | 'cash'
   autoTpValue: number | null;     // For percent: % value (e.g. 1 = 1%). For cash: currency amount
   autoTpStopAfterHit: boolean;    // true = stop after TP, false = infinite mode (auto restart)
+  
+  // ============== Daily Loss Alert (config only, no enforcement) ==============
+  dailyLossLimitPct: number;      // Alert threshold (default 5%)
 }
 
 export interface ButtonStates {
@@ -63,7 +65,6 @@ export function getInitialSessionState(): SessionState {
     winRate: 0,
     equity: 10000,
     lastError: null,
-    halted: false,
     pendingAction: null,
     // Run lifecycle - all reset
     runId: null,
@@ -75,11 +76,13 @@ export function getInitialSessionState(): SessionState {
     autoTpMode: 'percent',
     autoTpValue: 1, // Default 1% target
     autoTpStopAfterHit: false, // Infinite mode by default
+    // Daily loss alert (config only)
+    dailyLossLimitPct: 5,
   };
 }
 
 export function getButtonStates(session: SessionState): ButtonStates {
-  const { status, hasPositions, pendingAction, halted, openCount } = session;
+  const { status, hasPositions, pendingAction, openCount } = session;
   
   // CRITICAL: When ANY action is in progress, ALL control buttons are disabled
   // This prevents flashing/re-triggering during TP or CloseAll operations
@@ -88,8 +91,8 @@ export function getButtonStates(session: SessionState): ButtonStates {
   
   return {
     // ACTIVATE: when idle, stopped, OR holding (acts as Resume from holding)
-    // Disabled if ANY action is pending, or halted
-    canActivate: (status === 'idle' || status === 'stopped' || status === 'holding') && !isActionInProgress && !halted,
+    // No halt check - engine can always be activated
+    canActivate: (status === 'idle' || status === 'stopped' || status === 'holding') && !isActionInProgress,
     
     // HOLD: only when running, disabled if ANY action is pending
     canHold: status === 'running' && !isActionInProgress,
@@ -120,7 +123,6 @@ export type SessionAction =
   | { type: 'SET_MODE'; mode: TradingMode }
   | { type: 'SYNC_POSITIONS'; hasPositions: boolean; openCount: number }
   | { type: 'SYNC_PNL'; pnlToday: number; tradesToday: number; winRate: number; equity: number }
-  | { type: 'SET_HALTED'; halted: boolean }
   | { type: 'SET_PENDING_ACTION'; pendingAction: PendingAction }
   | { type: 'SYNC_STATUS'; status: SessionStatus }
   // Run lifecycle actions
@@ -130,7 +132,9 @@ export type SessionAction =
   // Auto-TP configuration actions
   | { type: 'SET_AUTO_TP_MODE'; mode: AutoTpMode }
   | { type: 'SET_AUTO_TP_VALUE'; value: number | null }
-  | { type: 'SET_AUTO_TP_STOP_AFTER_HIT'; stopAfterHit: boolean };
+  | { type: 'SET_AUTO_TP_STOP_AFTER_HIT'; stopAfterHit: boolean }
+  // Daily loss alert config
+  | { type: 'SET_DAILY_LOSS_LIMIT'; value: number };
 
 export function transitionSession(state: SessionState, action: SessionAction): SessionState {
   switch (action.type) {
@@ -200,15 +204,6 @@ export function transitionSession(state: SessionState, action: SessionAction): S
         equity: action.equity,
       };
     
-    case 'SET_HALTED':
-      return { 
-        ...state, 
-        halted: action.halted,
-        // If halted, also set to idle and clear pending action
-        status: action.halted ? 'idle' : state.status,
-        pendingAction: action.halted ? null : state.pendingAction,
-      };
-    
     case 'SET_PENDING_ACTION':
       return { ...state, pendingAction: action.pendingAction };
     
@@ -268,6 +263,9 @@ export function transitionSession(state: SessionState, action: SessionAction): S
     
     case 'SET_AUTO_TP_STOP_AFTER_HIT':
       return { ...state, autoTpStopAfterHit: action.stopAfterHit };
+    
+    case 'SET_DAILY_LOSS_LIMIT':
+      return { ...state, dailyLossLimitPct: action.value };
     
     default:
       return state;

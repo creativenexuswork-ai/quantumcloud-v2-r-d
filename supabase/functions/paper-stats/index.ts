@@ -52,6 +52,7 @@ serve(async (req) => {
           mode_config: { enabledModes: ['trend'], modeSettings: {} },
           market_config: { selectedSymbols: ['BTCUSDT', 'ETHUSDT'], typeFilters: { crypto: true, forex: true, index: true, metal: true } },
           is_running: false,
+          daily_loss_limit_pct: 5,
         })
         .select()
         .single();
@@ -115,8 +116,6 @@ serve(async (req) => {
     // If paper_stats_daily shows pnl=0, trades_count=0, equity=10000,
     // this indicates a manual reset - use those values directly
     // instead of recalculating from paper_trades.
-    // Also check if config.trading_halted_for_day is explicitly false
-    // (reset clears this flag) to catch edge cases.
     // ============================================
     const dailyStatsIndicatesReset = dailyStats && 
       dailyStats.pnl === 0 && 
@@ -124,10 +123,7 @@ serve(async (req) => {
       dailyStats.equity_start === 10000 && 
       dailyStats.equity_end === 10000;
     
-    // Also treat as reset if config explicitly says not halted and we have fresh stats
-    const configIndicatesReset = config?.trading_halted_for_day === false && dailyStatsIndicatesReset;
-    
-    const isResetState = dailyStatsIndicatesReset || configIndicatesReset;
+    const isResetState = dailyStatsIndicatesReset;
 
     let todayPnl: number;
     let todayPnlPercent: number;
@@ -179,15 +175,15 @@ serve(async (req) => {
 
     const burstPositions = (positions || []).filter((p: any) => p.mode === 'burst');
     const burstConfig = config?.burst_config || { dailyProfitTargetPercent: 8 };
-    const riskConfig = config?.risk_config || { maxDailyLossPercent: 5 };
     const burstStatus = burstPositions.length > 0 
       ? 'running' 
       : burstPnlPercent >= burstConfig.dailyProfitTargetPercent ? 'locked' : 'idle';
 
-    // Soft-mode: still report halted for analytics, but client won't enforce it
-    // Halted check - in reset state, never halted
-    const isHalted = isResetState ? false : (todayPnlPercent <= -riskConfig.maxDailyLossPercent || config?.trading_halted_for_day);
     const sessionStatus = config?.session_status || 'idle';
+    
+    // Daily loss limit as METRIC ONLY (no enforcement)
+    const dailyLossLimitPct = config?.daily_loss_limit_pct ?? 5;
+    const dailyLossPct = todayPnlPercent < 0 ? Math.abs(todayPnlPercent) : 0;
 
     const stats = {
       equity,
@@ -201,12 +197,15 @@ serve(async (req) => {
       burstPnlToday: burstPnlPercent,
       burstsToday: isResetState ? 0 : new Set(burstTrades.map((t: any) => t.batch_id).filter(Boolean)).size,
       burstStatus,
+      // Daily loss metrics (informational only)
+      dailyLossPct,
+      dailyLossLimitPct,
     };
 
     return new Response(JSON.stringify({
       stats,
       positions,
-      trades: isResetState ? [] : todayTrades, // Return empty trades array in reset state
+      trades: isResetState ? [] : todayTrades,
       historicalStats,
       symbols,
       logs,
@@ -215,14 +214,13 @@ serve(async (req) => {
         burst_config: config.burst_config,
         mode_config: config.mode_config,
         market_config: config.market_config,
-        trading_halted_for_day: config.trading_halted_for_day,
         burst_requested: config.burst_requested,
         use_ai_reasoning: config.use_ai_reasoning,
         show_advanced_explanations: config.show_advanced_explanations,
         is_running: config.is_running,
         session_status: config.session_status,
+        daily_loss_limit_pct: config.daily_loss_limit_pct,
       } : null,
-      halted: isHalted,
       sessionStatus,
     }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },

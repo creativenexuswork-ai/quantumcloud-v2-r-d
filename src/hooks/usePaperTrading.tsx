@@ -87,12 +87,12 @@ interface PaperConfig {
     selectedSymbols: string[];
     typeFilters: Record<string, boolean>;
   };
-  trading_halted_for_day: boolean;
   burst_requested: boolean;
   use_ai_reasoning: boolean;
   show_advanced_explanations: boolean;
   is_running?: boolean;
   session_status?: SessionStatus;
+  daily_loss_limit_pct?: number;
 }
 
 export function usePaperStats() {
@@ -143,7 +143,6 @@ export function usePaperStats() {
           created_at: string;
         }>;
         config: PaperConfig;
-        halted: boolean;
         sessionStatus: SessionStatus;
       }>;
     },
@@ -193,7 +192,6 @@ export function useTradingSession() {
   const { status, setStatus } = useSession();
   const isRunning = status === 'running';
   const isHolding = status === 'holding';
-  const [halted, setHalted] = useState(false);
   const [tickInFlight, setTickInFlight] = useState(false);
   
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -210,7 +208,7 @@ export function useTradingSession() {
     tickInFlightRef.current = tickInFlight;
   }, [tickInFlight]);
 
-  const runTickInternal = useCallback(async (): Promise<{ halted: boolean; sessionStatus: SessionStatus } | null> => {
+  const runTickInternal = useCallback(async (): Promise<{ sessionStatus: SessionStatus } | null> => {
     if (tickInFlightRef.current) return null;
     
     tickInFlightRef.current = true;
@@ -230,7 +228,6 @@ export function useTradingSession() {
 
       if (response.status === 401) {
         console.warn('QuantumCloud auth expired – 401 from paper-tick (tick loop)');
-        // Don't show toast here to avoid spam during tick loop, just return null
         return null;
       }
 
@@ -240,7 +237,6 @@ export function useTradingSession() {
       }
       
       const data = await response.json();
-      setHalted(data.halted || false);
       
       // Sync status from backend
       if (data.sessionStatus && data.sessionStatus !== statusRef.current) {
@@ -249,7 +245,7 @@ export function useTradingSession() {
       
       queryClient.invalidateQueries({ queryKey: ['paper-stats'] });
 
-      return { halted: data.halted || false, sessionStatus: data.sessionStatus || 'running' };
+      return { sessionStatus: data.sessionStatus || 'running' };
     } catch (error) {
       // Don't log AUTH errors as they're handled above
       if (error instanceof Error && !error.message.startsWith('AUTH_')) {
@@ -275,25 +271,13 @@ export function useTradingSession() {
       // Only tick if running or holding (holding still needs to manage positions)
       if (statusRef.current !== 'running' && statusRef.current !== 'holding') return;
       
-      const tickResult = await runTickInternal();
-      // Soft-mode: allow engine to run even if halted
-      // (tickResult.halted still calculated for analytics)
-      if (false) {
-        toast({
-          title: 'Trading Halted',
-          description: 'Daily loss limit reached.',
-          variant: 'destructive',
-        });
-        clearTickInterval();
-        setStatus('idle');
-      }
+      await runTickInternal();
+      // Daily loss no longer halts engine - continues trading
     }, 2000);
-  }, [runTickInternal, clearTickInterval, setStatus]);
+  }, [runTickInternal, clearTickInterval]);
 
   // Start session - begin trading
   const startSession = useCallback(async () => {
-    // Soft-mode bypass: halted check disabled
-    if (false && halted) return;
     if (status === 'running') return;
     
     try {
@@ -317,23 +301,8 @@ export function useTradingSession() {
       setStatus('running');
       
       // Run immediate tick
-      const result = await runTickInternal();
-      
-      // Soft-mode: allow engine to run even if halted
-      // (result.halted still calculated for analytics)
-      if (false) {
-        toast({
-          title: 'Trading Halted',
-          description: 'Daily loss limit reached.',
-          variant: 'destructive',
-        });
-        await supabase.from('paper_config').update({ 
-          is_running: false, 
-          session_status: 'idle' 
-        } as any).eq('user_id', user.id);
-        setStatus('idle');
-        return;
-      }
+      await runTickInternal();
+      // Daily loss no longer halts engine - continues trading
       
       startTickInterval();
       toast({ title: 'Session Started', description: 'Trading engine running' });
@@ -341,7 +310,7 @@ export function useTradingSession() {
       console.error('Start session error:', error);
       toast({ title: 'Error', description: 'Failed to start session', variant: 'destructive' });
     }
-  }, [halted, status, runTickInternal, startTickInterval, setStatus]);
+  }, [status, runTickInternal, startTickInterval, setStatus]);
 
   // Hold session - stop new trades but manage existing positions
   const holdSession = useCallback(async () => {
@@ -638,36 +607,24 @@ export function useTradingSession() {
       try {
         const { data: config } = await supabase
           .from('paper_config')
-          .select('is_running, trading_halted_for_day, session_status')
+          .select('is_running, session_status')
           .eq('user_id', session.user.id)
           .maybeSingle();
 
         if (!mounted) return;
 
         if (config) {
-          const effectiveHalted = config.trading_halted_for_day || false;
-          setHalted(effectiveHalted);
-          
           // Restore session status from backend
           const backendStatus = (config as any).session_status as SessionStatus || 'idle';
           setStatus(backendStatus);
           
-          // Start tick if running or holding and not halted
-          const shouldStartTick = !effectiveHalted && (backendStatus === 'running' || backendStatus === 'holding');
+          // Start tick if running or holding - no halt check needed
+          const shouldStartTick = backendStatus === 'running' || backendStatus === 'holding';
           
           if (shouldStartTick) {
-            const result = await runTickInternal();
+            await runTickInternal();
             
             if (!mounted) return;
-            
-            if (result?.halted) {
-              await supabase.from('paper_config').update({ 
-                is_running: false, 
-                session_status: 'idle' 
-              } as any).eq('user_id', session.user.id);
-              setStatus('idle');
-              return;
-            }
             
             startTickInterval();
           }
@@ -688,7 +645,6 @@ export function useTradingSession() {
   return {
     isActive: isRunning, 
     isHolding,
-    halted, 
     tickInFlight,
     startSession, 
     holdSession,
