@@ -114,13 +114,20 @@ serve(async (req) => {
     // RESET STATE DETECTION
     // If paper_stats_daily shows pnl=0, trades_count=0, equity=10000,
     // this indicates a manual reset - use those values directly
-    // instead of recalculating from paper_trades
+    // instead of recalculating from paper_trades.
+    // Also check if config.trading_halted_for_day is explicitly false
+    // (reset clears this flag) to catch edge cases.
     // ============================================
-    const isResetState = dailyStats && 
+    const dailyStatsIndicatesReset = dailyStats && 
       dailyStats.pnl === 0 && 
       dailyStats.trades_count === 0 && 
       dailyStats.equity_start === 10000 && 
       dailyStats.equity_end === 10000;
+    
+    // Also treat as reset if config explicitly says not halted and we have fresh stats
+    const configIndicatesReset = config?.trading_halted_for_day === false && dailyStatsIndicatesReset;
+    
+    const isResetState = dailyStatsIndicatesReset || configIndicatesReset;
 
     let todayPnl: number;
     let todayPnlPercent: number;

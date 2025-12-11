@@ -4,6 +4,7 @@ import { Badge } from '@/components/ui/badge';
 import { Play, Square, Loader2 } from 'lucide-react';
 import { useTradingSession, usePaperStats } from '@/hooks/usePaperTrading';
 import { useSession } from '@/lib/state/session';
+import { useSessionStore } from '@/lib/state/sessionMachine';
 
 const regimeColors: Record<string, string> = {
   trend: 'bg-success/20 text-success',
@@ -14,8 +15,10 @@ const regimeColors: Record<string, string> = {
 };
 
 export function LiveStateCard() {
-  const { startSession, stopSession, halted, tickInFlight } = useTradingSession();
+  const { startSession, stopSession, tickInFlight } = useTradingSession();
   const { status } = useSession();
+  // Use session store halted flag (single source of truth, synced by useSessionSync)
+  const halted = useSessionStore((state) => state.halted);
   const isRunning = status === 'running';
   const { data: paperData } = usePaperStats();
   

@@ -56,26 +56,71 @@ export function usePaperAccountReset() {
       }
       console.log('[PaperAccountReset] paper_config reset complete');
 
-      // 2. Reset paper_stats_daily for this user
-      const { error: statsError } = await supabase
+      // 2. Reset/upsert paper_stats_daily for today (ensures reset state detection works)
+      const today = new Date().toISOString().split('T')[0];
+      
+      // First try to update existing row for today
+      const { data: existingStats } = await supabase
         .from('paper_stats_daily')
-        .update({
-          equity_start: 10000,
-          equity_end: 10000,
-          pnl: 0,
-          max_drawdown: 0,
-          trades_count: 0,
-          win_rate: 0,
-        })
-        .eq('user_id', user.id);
+        .select('id')
+        .eq('user_id', user.id)
+        .eq('trade_date', today)
+        .maybeSingle();
 
-      if (statsError) {
-        console.error('[PaperAccountReset] Failed to reset paper_stats_daily:', statsError);
-        return { success: false, error: `Stats reset failed: ${statsError.message}` };
+      if (existingStats) {
+        // Update existing row
+        const { error: statsError } = await supabase
+          .from('paper_stats_daily')
+          .update({
+            equity_start: 10000,
+            equity_end: 10000,
+            pnl: 0,
+            max_drawdown: 0,
+            trades_count: 0,
+            win_rate: 0,
+          })
+          .eq('id', existingStats.id);
+
+        if (statsError) {
+          console.error('[PaperAccountReset] Failed to update paper_stats_daily:', statsError);
+          return { success: false, error: `Stats reset failed: ${statsError.message}` };
+        }
+      } else {
+        // Insert new row for today
+        const { error: insertError } = await supabase
+          .from('paper_stats_daily')
+          .insert({
+            user_id: user.id,
+            trade_date: today,
+            equity_start: 10000,
+            equity_end: 10000,
+            pnl: 0,
+            max_drawdown: 0,
+            trades_count: 0,
+            win_rate: 0,
+          });
+
+        if (insertError) {
+          console.error('[PaperAccountReset] Failed to insert paper_stats_daily:', insertError);
+          return { success: false, error: `Stats insert failed: ${insertError.message}` };
+        }
       }
-      console.log('[PaperAccountReset] paper_stats_daily reset complete');
+      console.log('[PaperAccountReset] paper_stats_daily reset/created for today');
 
-      // 3. Close all open paper_positions
+      // 3. Reset accounts table equity to 10k
+      const { error: accountError } = await supabase
+        .from('accounts')
+        .update({ equity: 10000 })
+        .eq('user_id', user.id)
+        .eq('type', 'paper');
+
+      if (accountError) {
+        console.error('[PaperAccountReset] Failed to reset accounts equity:', accountError);
+        // Non-fatal, continue
+      }
+      console.log('[PaperAccountReset] accounts equity reset to 10k');
+
+      // 4. Close all open paper_positions
       const { error: positionsError } = await supabase
         .from('paper_positions')
         .update({ closed: true })
