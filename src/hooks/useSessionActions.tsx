@@ -9,11 +9,7 @@ import { useTradingState } from './useSessionState';
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const TICK_INTERVAL_MS = 2000;   // 2s between ticks
 const PNL_REFRESH_MS = 300;      // 0.3s PnL refresh
-const AUTO_TP_CHECK_MS = 5000;   // 5s Auto-TP check (unchanged)
-
-// ============== TESTING FLAG ==============
-// TODO: Set back to false when finished debugging daily halt behavior
-const DISABLE_DAILY_HALT_FOR_TESTING = true;
+const AUTO_TP_CHECK_MS = 5000;   // 5s Auto-TP check
 
 // Map UI mode to backend mode
 const MODE_TO_BACKEND: Record<TradingMode, string> = {
@@ -63,8 +59,6 @@ export function useSessionActions() {
   }, []);
 
   // Fast P&L refresh - just fetches stats, no trade execution
-  // TODO: Re-enable halt signal after engine stabilisation
-  // TEMPORARY: UI halt signal disabled for debugging - halted state is ignored
   const refreshPnl = useCallback(async () => {
     const pendingAction = useSessionStore.getState().pendingAction;
     if (pendingAction) return; // Skip during pending actions
@@ -88,8 +82,9 @@ export function useSessionActions() {
           openCount: stats.stats.openPositionsCount || 0,
         });
       }
-      // TEMPORARY: halt signal check disabled for debugging
-      // if (stats?.halted) { dispatch({ type: 'SET_HALTED', halted: true }); }
+      if (stats?.halted) {
+        dispatch({ type: 'SET_HALTED', halted: true });
+      }
     } catch (error) {
       // Silent fail for P&L refresh - non-critical
     }
@@ -146,8 +141,8 @@ export function useSessionActions() {
       
       const data = await response.json();
       
-      // Sync halted state (skip in test mode to prevent UI blocking)
-      if (data.halted !== undefined && !DISABLE_DAILY_HALT_FOR_TESTING) {
+      // Sync halted state
+      if (data.halted !== undefined) {
         dispatch({ type: 'SET_HALTED', halted: data.halted });
       }
       
@@ -207,19 +202,18 @@ export function useSessionActions() {
       }
       
       const result = await runTick();
-      // TODO: Re-enable halt enforcement after testing
-      // if (result?.halted) {
-      //   toast({
-      //     title: 'Trading Halted',
-      //     description: 'Daily loss limit reached.',
-      //     variant: 'destructive',
-      //   });
-      //   clearTickInterval();
-      //   clearPnlRefresh();
-      //   clearAutoTpCheck();
-      //   dispatch({ type: 'SET_HALTED', halted: true });
-      //   dispatch({ type: 'END_RUN', reason: 'manual_stop' });
-      // }
+      if (result?.halted) {
+        toast({
+          title: 'Trading Halted',
+          description: 'Daily loss limit reached.',
+          variant: 'destructive',
+        });
+        clearTickInterval();
+        clearPnlRefresh();
+        clearAutoTpCheck();
+        dispatch({ type: 'SET_HALTED', halted: true });
+        dispatch({ type: 'END_RUN', reason: 'manual_stop' });
+      }
     }, TICK_INTERVAL_MS);
   }, [runTick, clearTickInterval, clearPnlRefresh, clearAutoTpCheck, dispatch]);
 
@@ -354,15 +348,14 @@ export function useSessionActions() {
 
   // ACTIVATE - Start trading session OR Resume from holding
   // Creates a new run with Auto-TP parameters
-  // TEMPORARY: halt bypass for debugging. Remove after timing engine unification.
   const activate = useCallback(async () => {
     const state = useSessionStore.getState();
     
-    // TEMPORARY BYPASS: Halted check disabled for debugging
-    // if (state.halted) {
-    //   toast({ title: 'Trading Halted', description: 'Daily loss limit reached', variant: 'destructive' });
-    //   return;
-    // }
+    // Check if trading is halted
+    if (state.halted) {
+      toast({ title: 'Trading Halted', description: 'Daily loss limit reached', variant: 'destructive' });
+      return;
+    }
     
     // Can activate from idle, stopped, or holding
     if (state.status !== 'idle' && state.status !== 'stopped' && state.status !== 'holding') {
@@ -434,30 +427,27 @@ export function useSessionActions() {
         targetEquity 
       });
       
-      // TEMPORARY: Force-clear halted state for debugging
-      dispatch({ type: 'SET_HALTED', halted: false });
-      
       console.log(`[RUN] Started: id=${runId}, baseline=${currentEquity.toFixed(2)}, target=${targetEquity?.toFixed(2) || 'none'}, mode=${autoTpMode}`);
 
       // Run immediate tick
       const result = await runTick();
       
-      // TEMPORARY BYPASS: Halted check disabled for debugging - always start intervals
-      // if (result?.halted) {
-      //   toast({
-      //     title: 'Trading Halted',
-      //     description: 'Daily loss limit reached.',
-      //     variant: 'destructive',
-      //   });
-      //   await supabase.from('paper_config').update({
-      //     is_running: false,
-      //     session_status: 'idle',
-      //   } as any).eq('user_id', user.id);
-      //   dispatch({ type: 'SET_HALTED', halted: true });
-      //   dispatch({ type: 'END_RUN', reason: 'manual_stop' });
-      //   dispatch({ type: 'SET_PENDING_ACTION', pendingAction: null });
-      //   return;
-      // }
+      // Check if halted after first tick
+      if (result?.halted) {
+        toast({
+          title: 'Trading Halted',
+          description: 'Daily loss limit reached.',
+          variant: 'destructive',
+        });
+        await supabase.from('paper_config').update({
+          is_running: false,
+          session_status: 'idle',
+        } as any).eq('user_id', user.id);
+        dispatch({ type: 'SET_HALTED', halted: true });
+        dispatch({ type: 'END_RUN', reason: 'manual_stop' });
+        dispatch({ type: 'SET_PENDING_ACTION', pendingAction: null });
+        return;
+      }
       
       // Start intervals
       startTickInterval();

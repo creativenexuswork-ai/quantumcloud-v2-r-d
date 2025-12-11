@@ -12,10 +12,6 @@ import {
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 
-// ============== TESTING FLAG ==============
-// TODO: Set back to false when finished debugging daily halt behavior
-const DISABLE_DAILY_HALT_FOR_TESTING = true;
-
 /**
  * Handle 401 responses from Edge Functions - logs and notifies user without touching engine logic.
  */
@@ -244,18 +240,16 @@ export function useTradingSession() {
       }
       
       const data = await response.json();
-      // TODO: Re-enable after testing: setHalted(data.halted || false);
-      setHalted(false); // TEMPORARY: Force halted=false for testing
+      setHalted(data.halted || false);
       
-      // TODO: Re-enable after testing - sync status from backend
-      // if (data.sessionStatus && data.sessionStatus !== statusRef.current) {
-      //   setStatus(data.sessionStatus);
-      // }
+      // Sync status from backend
+      if (data.sessionStatus && data.sessionStatus !== statusRef.current) {
+        setStatus(data.sessionStatus);
+      }
       
       queryClient.invalidateQueries({ queryKey: ['paper-stats'] });
 
-      // TEMPORARY: Always return halted=false for testing
-      return { halted: false, sessionStatus: data.sessionStatus || 'running' };
+      return { halted: data.halted || false, sessionStatus: data.sessionStatus || 'running' };
     } catch (error) {
       // Don't log AUTH errors as they're handled above
       if (error instanceof Error && !error.message.startsWith('AUTH_')) {
@@ -282,23 +276,21 @@ export function useTradingSession() {
       if (statusRef.current !== 'running' && statusRef.current !== 'holding') return;
       
       const tickResult = await runTickInternal();
-      // TODO: Re-enable halt enforcement after testing
-      // if (tickResult?.halted) {
-      //   toast({
-      //     title: 'Trading Halted',
-      //     description: 'Daily loss limit reached.',
-      //     variant: 'destructive',
-      //   });
-      //   clearTickInterval();
-      //   setStatus('idle');
-      // }
-    }, 2000); // UNIFIED TIMING: Hardcoded 2s tick interval (source of truth: useSessionActions.tsx)
+      if (tickResult?.halted) {
+        toast({
+          title: 'Trading Halted',
+          description: 'Daily loss limit reached.',
+          variant: 'destructive',
+        });
+        clearTickInterval();
+        setStatus('idle');
+      }
+    }, 2000);
   }, [runTickInternal, clearTickInterval, setStatus]);
 
   // Start session - begin trading
-  // TODO: Re-enable halt check after testing: if (halted || status === 'running') return;
   const startSession = useCallback(async () => {
-    if (status === 'running') return; // TEMPORARY: Only check running, ignore halted
+    if (halted || status === 'running') return;
     
     try {
       const { data: { user } } = await supabase.auth.getUser();
@@ -323,20 +315,19 @@ export function useTradingSession() {
       // Run immediate tick
       const result = await runTickInternal();
       
-      // TODO: Re-enable halt enforcement after testing
-      // if (result?.halted) {
-      //   toast({
-      //     title: 'Trading Halted',
-      //     description: 'Daily loss limit reached.',
-      //     variant: 'destructive',
-      //   });
-      //   await supabase.from('paper_config').update({ 
-      //     is_running: false, 
-      //     session_status: 'idle' 
-      //   } as any).eq('user_id', user.id);
-      //   setStatus('idle');
-      //   return;
-      // }
+      if (result?.halted) {
+        toast({
+          title: 'Trading Halted',
+          description: 'Daily loss limit reached.',
+          variant: 'destructive',
+        });
+        await supabase.from('paper_config').update({ 
+          is_running: false, 
+          session_status: 'idle' 
+        } as any).eq('user_id', user.id);
+        setStatus('idle');
+        return;
+      }
       
       startTickInterval();
       toast({ title: 'Session Started', description: 'Trading engine running' });
@@ -344,7 +335,7 @@ export function useTradingSession() {
       console.error('Start session error:', error);
       toast({ title: 'Error', description: 'Failed to start session', variant: 'destructive' });
     }
-  }, [status, runTickInternal, startTickInterval, setStatus]); // TEMPORARY: removed halted from deps
+  }, [halted, status, runTickInternal, startTickInterval, setStatus]);
 
   // Hold session - stop new trades but manage existing positions
   const holdSession = useCallback(async () => {
@@ -648,32 +639,29 @@ export function useTradingSession() {
         if (!mounted) return;
 
         if (config) {
-          // TODO: Re-enable after testing
-          // const effectiveHalted = DISABLE_DAILY_HALT_FOR_TESTING ? false : (config.trading_halted_for_day || false);
-          // setHalted(effectiveHalted);
-          setHalted(false); // TEMPORARY: Force halted=false for testing
+          const effectiveHalted = config.trading_halted_for_day || false;
+          setHalted(effectiveHalted);
           
           // Restore session status from backend
           const backendStatus = (config as any).session_status as SessionStatus || 'idle';
           setStatus(backendStatus);
           
-          // TEMPORARY: Always start tick if running or holding, ignore halt check
-          const shouldStartTick = (backendStatus === 'running' || backendStatus === 'holding');
+          // Start tick if running or holding and not halted
+          const shouldStartTick = !effectiveHalted && (backendStatus === 'running' || backendStatus === 'holding');
           
           if (shouldStartTick) {
             const result = await runTickInternal();
             
             if (!mounted) return;
             
-            // TODO: Re-enable halt enforcement after testing
-            // if (result?.halted && !DISABLE_DAILY_HALT_FOR_TESTING) {
-            //   await supabase.from('paper_config').update({ 
-            //     is_running: false, 
-            //     session_status: 'idle' 
-            //   } as any).eq('user_id', session.user.id);
-            //   setStatus('idle');
-            //   return;
-            // }
+            if (result?.halted) {
+              await supabase.from('paper_config').update({ 
+                is_running: false, 
+                session_status: 'idle' 
+              } as any).eq('user_id', session.user.id);
+              setStatus('idle');
+              return;
+            }
             
             startTickInterval();
           }
