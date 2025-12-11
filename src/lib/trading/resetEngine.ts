@@ -27,15 +27,22 @@ export interface ResetEngineResult {
  * Centralized reset function that clears all engine state.
  * 
  * This function:
- * - Deletes all open paper positions
- * - Clears today's trades
+ * - Deletes all open paper positions (closes all trades)
+ * - Clears today's trades history
  * - Resets daily stats to the new balance
  * - Updates paper_config session status
+ * - Clears per-run counters and guards
  * - Returns the engine to a clean, trade-ready state
+ * 
+ * CRITICAL: This function performs a FULL state reset before any restart logic.
+ * Both "Stop after TP" and "Continuous" modes get a full reset - the only difference
+ * is whether keepRunning is true (continuous) or false (stop after TP).
  */
 export async function resetEngine(opts?: ResetEngineOptions): Promise<ResetEngineResult> {
   const reason = opts?.reason ?? 'manual_reset';
   const keepRunning = opts?.keepRunning === true;
+
+  console.log(`[resetEngine] Starting reset: reason=${reason}, keepRunning=${keepRunning}`);
 
   try {
     const { data: { user } } = await supabase.auth.getUser();
@@ -49,16 +56,24 @@ export async function resetEngine(opts?: ResetEngineOptions): Promise<ResetEngin
     // 1) Get current paper_stats to determine starting balance
     const { data: currentStats } = await supabase
       .from('paper_stats_daily')
-      .select('equity_start')
+      .select('equity_start, equity_end')
       .eq('user_id', userId)
       .eq('trade_date', today)
       .maybeSingle();
 
-    // Determine the new equity value
-    const newEquity = 
-      typeof opts?.newPaperBalance === 'number' && opts.newPaperBalance > 0
-        ? opts.newPaperBalance
-        : currentStats?.equity_start ?? 10000;
+    // Determine the new equity value:
+    // - If explicit newPaperBalance provided, use it
+    // - For continuous mode after TP, use current equity_end as new baseline
+    // - Otherwise use equity_start (original starting balance)
+    let newEquity: number;
+    if (typeof opts?.newPaperBalance === 'number' && opts.newPaperBalance > 0) {
+      newEquity = opts.newPaperBalance;
+    } else if (keepRunning && currentStats?.equity_end) {
+      // Continuous mode: use current equity as new baseline
+      newEquity = currentStats.equity_end;
+    } else {
+      newEquity = currentStats?.equity_start ?? 10000;
+    }
 
     // 2) Delete all open paper positions (closes all trades)
     const { error: posError } = await supabase
@@ -103,12 +118,16 @@ export async function resetEngine(opts?: ResetEngineOptions): Promise<ResetEngin
     // CRITICAL: Only go to 'idle' if NOT keeping running (stopAfterTP = true or manual reset)
     // If keepRunning = true (continuous mode), stay 'running'
     const newStatus = keepRunning ? 'running' : 'idle';
+    const newSessionStartedAt = keepRunning ? new Date().toISOString() : null;
+    
     const { error: configError } = await supabase
       .from('paper_config')
       .update({
         is_running: keepRunning,
         session_status: newStatus,
+        session_started_at: newSessionStartedAt, // Reset session start time for new run
         trading_halted_for_day: false, // Clear any halt flags
+        burst_requested: false, // Clear burst request flag
         updated_at: new Date().toISOString(),
       } as any)
       .eq('user_id', userId);
@@ -122,9 +141,11 @@ export async function resetEngine(opts?: ResetEngineOptions): Promise<ResetEngin
       user_id: userId,
       level: 'info',
       source: 'execution',
-      message: `ENGINE RESET: reason=${reason}, newEquity=${newEquity}, keepRunning=${keepRunning}`,
-      meta: { reason, newEquity, keepRunning },
+      message: `ENGINE RESET: reason=${reason}, newEquity=${newEquity.toFixed(2)}, keepRunning=${keepRunning}, newStatus=${newStatus}`,
+      meta: { reason, newEquity, keepRunning, newStatus },
     });
+
+    console.log(`[resetEngine] Reset complete: newEquity=${newEquity.toFixed(2)}, status=${newStatus}`);
 
     return {
       success: true,
@@ -143,39 +164,51 @@ export async function resetEngine(opts?: ResetEngineOptions): Promise<ResetEngin
 
 /**
  * Handler for session end events (Auto-TP, max-loss, manual stop).
- * Routes all terminal reasons through resetEngine.
+ * Routes all terminal reasons through resetEngine with proper flag mapping.
+ * 
+ * CRITICAL CONTRACT:
+ * - "Stop after TP" mode: autoTpStopAfterHit = true → full reset, stay idle
+ * - "Continuous" mode: autoTpStopAfterHit = false → full reset, auto-restart with clean state
+ * - Other reasons (max_dd, risk_guard, manual_stop): always full reset and idle
  */
 export async function onSessionEnd(
   reason: RunEndReason,
   autoTpStopAfterHit: boolean = true
 ): Promise<ResetEngineResult> {
+  console.log(`[onSessionEnd] Handling session end: reason=${reason}, autoTpStopAfterHit=${autoTpStopAfterHit}`);
+  
   if (reason === 'auto_tp') {
     if (autoTpStopAfterHit) {
-      // Hit TP and stop trading → full reset, stay idle
+      // "Stop after TP" mode: full reset, stay idle until user starts again
+      console.log('[onSessionEnd] Stop after TP: resetting to idle');
       return resetEngine({
         reason,
         keepRunning: false,
       });
     } else {
-      // Continuous mode → full reset, then new clean run
+      // "Continuous" mode: full reset, then immediately start a new clean run
+      console.log('[onSessionEnd] Continuous mode: resetting then auto-restarting');
       return resetEngine({
         reason,
         keepRunning: true,
       });
     }
   } else if (reason === 'max_dd' || reason === 'risk_guard') {
-    // Hard stop: full reset and stay idle
+    // Hard stop: full reset and stay idle - user must manually restart
+    console.log(`[onSessionEnd] Hard stop (${reason}): resetting to idle`);
     return resetEngine({
       reason,
       keepRunning: false,
     });
   } else if (reason === 'manual_stop') {
+    console.log('[onSessionEnd] Manual stop: resetting to idle');
     return resetEngine({
       reason,
       keepRunning: false,
     });
   } else {
     // Any other termination reason → safe full reset, idle
+    console.log(`[onSessionEnd] Other reason (${reason}): resetting to idle`);
     return resetEngine({
       reason,
       keepRunning: false,

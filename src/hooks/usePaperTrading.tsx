@@ -424,8 +424,13 @@ export function useTradingSession() {
   }, [clearTickInterval, queryClient, setStatus]);
 
   // Dispatch session end - resets runtime state and optionally restarts
+  // CRITICAL: autoRestart is the INVERSE of autoTpStopAfterHit
+  // - autoRestart = true  → continuous mode (keep running after TP)
+  // - autoRestart = false → stop after TP (go idle)
   const dispatchSessionEnd = useCallback(async (reason: SessionEndReason, autoRestart: boolean = false) => {
-    // Reset runtime state first
+    console.log(`[dispatchSessionEnd] reason=${reason}, autoRestart=${autoRestart}`);
+    
+    // Reset runtime state first (in-memory state)
     handleSessionEndRuntime(reason, status === 'running');
     
     // Then handle database-level reset
@@ -433,18 +438,26 @@ export function useTradingSession() {
     
     clearTickInterval();
     
+    // CRITICAL: Map autoRestart to autoTpStopAfterHit correctly
+    // autoRestart = true  means stopAfterHit = false (continuous)
+    // autoRestart = false means stopAfterHit = true (stop after TP)
+    const stopAfterHit = !autoRestart;
+    
+    console.log(`[dispatchSessionEnd] Calling onSessionEnd with stopAfterHit=${stopAfterHit}`);
     const result = await onSessionEnd(
       reason as 'auto_tp' | 'max_dd' | 'risk_guard' | 'manual_stop',
-      !autoRestart // stopAfterHit is inverse of autoRestart
+      stopAfterHit
     );
     
     if (result.success) {
+      // Set UI status based on whether we're restarting
       const newStatus = autoRestart ? 'running' : 'idle';
       setStatus(newStatus);
       queryClient.invalidateQueries({ queryKey: ['paper-stats'] });
       
-      // Restart tick interval if auto-restarting
+      // Restart tick interval if auto-restarting (continuous mode)
       if (autoRestart) {
+        console.log('[dispatchSessionEnd] Auto-restarting tick interval for continuous mode');
         startTickInterval();
       }
     }
@@ -479,14 +492,22 @@ export function useTradingSession() {
     }
   }, [queryClient]);
 
-  // Take burst profit - triggers SESSION_END after closing positions
+  // Take burst profit - closes positions and triggers SESSION_END
+  // Reads autoTpStopAfterHit from database config to determine behavior:
+  // - stopAfterHit = true  → close positions, reset, stay idle
+  // - stopAfterHit = false → close positions, reset, auto-restart (continuous)
   const takeBurstProfit = useCallback(async () => {
+    console.log('[takeBurstProfit] Starting burst profit take');
+    
     try {
       const session = await getAuthSession();
       
-      // Fetch the autoTpStopAfterHit setting from paper_config
+      // Fetch the autoTpStopAfterHit setting from paper_config.burst_config
       const { data: { user } } = await supabase.auth.getUser();
-      if (!user) return;
+      if (!user) {
+        console.error('[takeBurstProfit] No user found');
+        return;
+      }
       
       const { data: config } = await supabase
         .from('paper_config')
@@ -494,10 +515,14 @@ export function useTradingSession() {
         .eq('user_id', user.id)
         .single();
       
-      // Default to stopping after TP if setting not found
+      // Read the stopAfterHit setting from burst_config
+      // Default to true (stop after TP) if setting not found
       const burstConfig = config?.burst_config as { autoTpStopAfterHit?: boolean } | null;
       const stopAfterHit = burstConfig?.autoTpStopAfterHit ?? true;
       
+      console.log(`[takeBurstProfit] Config: stopAfterHit=${stopAfterHit} (continuous=${!stopAfterHit})`);
+      
+      // Call edge function to close burst positions
       const response = await fetch(`${SUPABASE_URL}/functions/v1/paper-tick`, {
         method: 'POST',
         headers: { 
@@ -512,13 +537,18 @@ export function useTradingSession() {
       }
       
       if (response.ok) {
-        // Dispatch SESSION_END for auto_tp
+        // Dispatch SESSION_END with the correct autoRestart flag
         // autoRestart = true when stopAfterHit = false (continuous mode)
         // autoRestart = false when stopAfterHit = true (stop after TP)
-        await dispatchSessionEnd('auto_tp', !stopAfterHit);
+        const autoRestart = !stopAfterHit;
+        console.log(`[takeBurstProfit] Dispatching session end: autoRestart=${autoRestart}`);
+        await dispatchSessionEnd('auto_tp', autoRestart);
+        
+        const message = stopAfterHit 
+          ? 'Burst profit taken - session stopped'
+          : 'Burst profit taken - restarting with fresh baseline';
+        toast({ title: 'Burst Profit Taken', description: message });
       }
-      
-      toast({ title: 'Burst Profit Taken' });
     } catch (error) {
       console.error('Take burst profit error:', error);
       toast({ title: 'Error', description: 'Failed to take burst profit', variant: 'destructive' });

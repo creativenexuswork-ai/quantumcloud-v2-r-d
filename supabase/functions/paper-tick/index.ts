@@ -1168,17 +1168,24 @@ serve(async (req) => {
     }
 
     // Handle take burst profit
+    // NOTE: This only closes burst positions. Session end logic is handled by client after this returns.
+    // Client reads burst_config.autoTpStopAfterHit to determine continuous vs stop-after-TP behavior.
     if (takeBurstProfit) {
+      console.log('[PAPER_TICK] Processing takeBurstProfit request');
+      
       const { data: burstPositions } = await supabase.from('paper_positions').select('*').eq('user_id', userId).eq('mode', 'burst');
       const burstCount = (burstPositions || []).length;
       
       if (burstCount > 0) {
         const burstIds = (burstPositions || []).map(p => p.id);
+        let totalBurstPnl = 0;
+        
         const tradeRecords = (burstPositions || []).map(pos => {
           const tick = ticks[pos.symbol];
           const exitPrice = tick ? (pos.side === 'long' ? tick.bid : tick.ask) : Number(pos.entry_price);
           const priceDiff = pos.side === 'long' ? exitPrice - Number(pos.entry_price) : Number(pos.entry_price) - exitPrice;
           const pnl = priceDiff * Number(pos.size);
+          totalBurstPnl += pnl;
           return {
             user_id: userId, symbol: pos.symbol, mode: pos.mode, side: pos.side,
             size: pos.size, entry_price: pos.entry_price, exit_price: exitPrice,
@@ -1192,9 +1199,14 @@ serve(async (req) => {
           supabase.from('paper_positions').delete().in('id', burstIds),
           supabase.from('system_logs').insert({
             user_id: userId, level: 'info', source: 'burst',
-            message: `BURST: Take profit - ${burstCount} burst positions closed`,
+            message: `BURST TP: ${burstCount} positions closed. Total P&L: ${totalBurstPnl >= 0 ? '+' : ''}$${totalBurstPnl.toFixed(2)}`,
+            meta: { count: burstCount, pnl: totalBurstPnl },
           }),
         ]);
+        
+        console.log(`[PAPER_TICK] Burst TP complete: closed ${burstCount} positions, P&L: $${totalBurstPnl.toFixed(2)}`);
+      } else {
+        console.log('[PAPER_TICK] Burst TP: no burst positions to close');
       }
     }
 

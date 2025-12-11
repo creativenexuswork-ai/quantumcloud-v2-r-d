@@ -4,6 +4,7 @@ import { Badge } from '@/components/ui/badge';
 import { Zap, DollarSign, X, Loader2 } from 'lucide-react';
 import { useTradingSession, usePaperStats } from '@/hooks/usePaperTrading';
 import { useSession } from '@/lib/state/session';
+import { useSessionStore } from '@/lib/state/sessionMachine';
 import { toast } from 'sonner';
 
 export function BurstControlCard() {
@@ -11,6 +12,9 @@ export function BurstControlCard() {
   const { status, setStatus } = useSession();
   const isRunning = status === 'running';
   const { data: paperData, isLoading } = usePaperStats();
+  
+  // Get Auto-TP stop after hit config from session store
+  const autoTpStopAfterHit = useSessionStore((s) => s.autoTpStopAfterHit);
   
   const stats = paperData?.stats;
   const burstStatus = stats?.burstStatus || 'idle';
@@ -93,9 +97,10 @@ export function BurstControlCard() {
             variant="secondary"
             size="sm"
             className="gap-2"
+            title={autoTpStopAfterHit ? 'Take profit and stop' : 'Take profit and continue (continuous mode)'}
           >
             <DollarSign className="h-4 w-4" />
-            Take Profit
+            {autoTpStopAfterHit ? 'Take Profit' : 'TP & Continue'}
           </Button>
         </div>
 
