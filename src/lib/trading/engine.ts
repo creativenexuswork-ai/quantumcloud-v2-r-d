@@ -18,6 +18,7 @@ import { markToMarket, checkExits, closePositions, calculateStats } from './pnl'
 import { classifyEnvironment, recordTick, type EnvironmentSummary } from './environment';
 import { calculateEdge, type EdgeSignal } from './edge';
 import { evaluateEntry, getModePersonality, type ModePersonality } from './entry';
+import { classifyRegime, type RegimeSnapshot } from './regime';
 import { calculatePositionSize, createRiskProfile } from './sizing';
 import { managePositions, identifyRotationCandidates } from './management';
 import { routeMarkets, shouldConsiderForEntry } from './router';
@@ -358,7 +359,10 @@ export function runTradingTick(input: RunTickInput): EngineState {
       continue;
     }
     
-    // Evaluate entry
+    // Get regime for bias filtering
+    const regime = classifyRegime(symbol, tick);
+    
+    // Evaluate entry with bias filter
     const entryDecision = evaluateEntry(
       symbol,
       tick,
@@ -368,7 +372,8 @@ export function runTradingTick(input: RunTickInput): EngineState {
       thermostatState,
       positions,
       allTodayTrades,
-      config.riskConfig.maxOpenTrades || 10
+      config.riskConfig.maxOpenTrades || 10,
+      regime
     );
     
     if (!entryDecision.shouldEnter || !entryDecision.entryDirection) continue;
@@ -509,6 +514,8 @@ export { updateThermostat, type ThermostatState } from './thermostat';
 export { analyzeSession } from './session-brain';
 export { routeMarkets } from './router';
 export { buildOrderRequest, executeOrder } from './execution';
+export { classifyRegime, type RegimeSnapshot } from './regime';
+export { applyBiasFilter, calculateDirectionalPerformance, getBiasFilterSummary } from './bias-filter';
 export { resetEngine, onSessionEnd, type RunEndReason, type ResetEngineOptions, type ResetEngineResult } from './resetEngine';
 export { 
   resetSessionState, 
