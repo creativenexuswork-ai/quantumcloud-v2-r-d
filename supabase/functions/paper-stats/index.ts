@@ -227,7 +227,8 @@ serve(async (req) => {
         is_running: config.is_running,
         session_status: config.session_status,
       } : null,
-      halted: isHalted,
+      // TODO: Re-enable after engine stabilisation: halted: isHalted,
+      halted: false, // TEMPORARY: force-disabled for debugging
       sessionStatus,
     }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
