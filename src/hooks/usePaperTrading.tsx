@@ -11,8 +11,6 @@ import {
 } from '@/lib/trading/resetSession';
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
-const TICK_INTERVAL_MS = 2000;
-const STATS_REFRESH_MS = 600; // P&L refresh every 600ms for faster updates
 
 // ============== TESTING FLAG ==============
 // TODO: Set back to false when finished debugging daily halt behavior
@@ -154,9 +152,10 @@ export function usePaperStats() {
       }>;
     },
     enabled: !!session,
-    refetchInterval: STATS_REFRESH_MS, // Fast 1s P&L refresh
+    // UNIFIED TIMING: Polling disabled here - useSessionActions.tsx owns all timing
+    refetchInterval: false,
     retry: 2,
-    staleTime: 500, // Consider data stale after 500ms for faster updates
+    staleTime: Infinity,
   });
 }
 
@@ -290,7 +289,7 @@ export function useTradingSession() {
         clearTickInterval();
         setStatus('idle');
       }
-    }, TICK_INTERVAL_MS);
+    }, 2000); // UNIFIED TIMING: Hardcoded 2s tick interval (source of truth: useSessionActions.tsx)
   }, [runTickInternal, clearTickInterval, setStatus]);
 
   // Start session - begin trading
