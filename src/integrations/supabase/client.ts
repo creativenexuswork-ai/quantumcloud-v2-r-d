@@ -15,3 +15,22 @@ export const supabase = createClient<Database>(SUPABASE_URL, SUPABASE_PUBLISHABL
     autoRefreshToken: true,
   }
 });
+
+/**
+ * Centralized auth session helper - always fetches a fresh session before Edge Function calls.
+ * Throws AUTH_SESSION_ERROR or AUTH_SESSION_MISSING if session is invalid/missing.
+ */
+export async function getAuthSession() {
+  const { data: { session }, error } = await supabase.auth.getSession();
+
+  if (error) {
+    console.error('Supabase getSession error:', error);
+    throw new Error('AUTH_SESSION_ERROR');
+  }
+
+  if (!session?.access_token) {
+    throw new Error('AUTH_SESSION_MISSING');
+  }
+
+  return session;
+}
