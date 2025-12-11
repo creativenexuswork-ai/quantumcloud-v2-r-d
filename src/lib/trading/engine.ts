@@ -69,6 +69,14 @@ export interface EngineV15Result {
 let thermostatState: ThermostatState = getInitialThermostatState();
 let lastAdaptiveMode: ModePersonality | null = null;
 
+/**
+ * Reset engine memory - used by engine reset
+ */
+export function _resetEngineMemory(): void {
+  thermostatState = getInitialThermostatState();
+  lastAdaptiveMode = null;
+}
+
 // Re-export resetWarmStart from resetSession for backward compatibility
 export { resetWarmStartFlag as resetWarmStart } from './resetSession';
 
