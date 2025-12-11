@@ -27,8 +27,15 @@ export interface PriceCandle {
 }
 
 // Store recent price history for analysis
-const priceHistory: Record<string, PriceTick[]> = {};
+let priceHistory: Record<string, PriceTick[]> = {};
 const MAX_HISTORY = 100;
+
+/**
+ * Clear all price history cache - used by engine reset
+ */
+export function _clearPriceHistory(): void {
+  priceHistory = {};
+}
 
 export function recordTick(symbol: string, tick: PriceTick): void {
   if (!priceHistory[symbol]) {
