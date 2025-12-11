@@ -5,8 +5,6 @@ import type { Side, TradingMode, Position, ClosedTrade, PriceTick } from './type
 import type { EnvironmentSummary } from './environment';
 import type { EdgeSignal } from './edge';
 import type { ThermostatState } from './thermostat';
-import type { RegimeSnapshot } from './regime';
-import { applyBiasFilter } from './bias-filter';
 
 export type EntryProfile = 'burst_scalp' | 'trend' | 'hybrid';
 export type ModePersonality = 'burst' | 'scalper' | 'trend';
@@ -138,8 +136,7 @@ export function evaluateEntry(
   thermostat: ThermostatState,
   positions: Position[],
   recentTrades: ClosedTrade[],
-  maxTotalPositions: number = 10,
-  regime: RegimeSnapshot | null = null
+  maxTotalPositions: number = 10
 ): EntryDecision {
   const config = MODE_CONFIGS[modePersonality];
   const performance = calculateRecentPerformance(recentTrades);
@@ -248,20 +245,6 @@ export function evaluateEntry(
       confidence: 0
     };
   }
-  
-  // Check 8.5: DIRECTIONAL BIAS FILTER (OBSERVER MODE - does not block)
-  const biasResult = applyBiasFilter(edge.edgeDirection, regime, recentTrades, positions);
-  // OBSERVER MODE: bias filter logs stats but does not block entries
-  // if (!biasResult.allowed) {
-  //   return {
-  //     shouldEnter: false,
-  //     entryDirection: null,
-  //     entryProfile: mapModeToProfile(modePersonality),
-  //     suggestedEntryZone: null,
-  //     reason: biasResult.reason,
-  //     confidence: 0
-  //   };
-  // }
   
   // Check 9: Position limits
   const modePositions = getPositionCountByMode(positions, modePersonality);

@@ -208,7 +208,6 @@ export type Database = {
           broker_api_url: string | null
           burst_config: Json | null
           burst_requested: boolean | null
-          daily_loss_limit_pct: number | null
           is_running: boolean | null
           market_config: Json | null
           mode_config: Json | null
@@ -225,7 +224,6 @@ export type Database = {
           broker_api_url?: string | null
           burst_config?: Json | null
           burst_requested?: boolean | null
-          daily_loss_limit_pct?: number | null
           is_running?: boolean | null
           market_config?: Json | null
           mode_config?: Json | null
@@ -242,7 +240,6 @@ export type Database = {
           broker_api_url?: string | null
           burst_config?: Json | null
           burst_requested?: boolean | null
-          daily_loss_limit_pct?: number | null
           is_running?: boolean | null
           market_config?: Json | null
           mode_config?: Json | null

@@ -4,7 +4,9 @@ import { useSessionStore } from '@/lib/state/sessionMachine';
 
 /**
  * Hook to sync session data from backend paper-stats polling.
- * Syncs P&L, positions, and session status.
+ * Syncs P&L, positions, stats, and halted state.
+ * Also syncs session status from backend IF it's a "terminal" state (idle/stopped)
+ * to ensure Close All and Take Profit state changes are reflected.
  */
 export function useSessionSync() {
   const { data: paperData, refetch } = usePaperStats();
@@ -17,7 +19,7 @@ export function useSessionSync() {
 
     const { stats } = paperData;
 
-    // Sync position data
+    // Sync position data - this is purely informational
     if (stats) {
       const hasPositions = (stats.openPositionsCount || 0) > 0;
       const openCount = stats.openPositionsCount || 0;
@@ -37,9 +39,17 @@ export function useSessionSync() {
       });
     }
 
-    // Sync session status from backend (for terminal states)
+    // Sync halted state from backend
+    if (paperData.halted !== undefined) {
+      dispatch({ type: 'SET_HALTED', halted: paperData.halted });
+    }
+
+    // Sync session status from backend ONLY for terminal states (idle/stopped)
+    // This ensures Close All properly stops the engine
+    // Don't auto-start if backend says 'running' but frontend is idle
     const backendStatus = paperData.sessionStatus;
     if (backendStatus === 'idle' || backendStatus === 'stopped') {
+      // If backend is idle/stopped, respect it (Close All was triggered)
       if (currentStatus === 'running' || currentStatus === 'holding') {
         console.log(`[SessionSync] Backend says ${backendStatus}, syncing from ${currentStatus}`);
         dispatch({ type: 'SYNC_STATUS', status: backendStatus });

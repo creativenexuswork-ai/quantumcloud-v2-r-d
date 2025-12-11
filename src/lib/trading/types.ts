@@ -91,6 +91,7 @@ export interface PaperConfig {
   burstConfig: BurstConfig;
   modeConfig: ModeConfig;
   marketConfig: MarketConfig;
+  tradingHaltedForDay: boolean;
   burstRequested: boolean;
   useAiReasoning: boolean;
   showAdvancedExplanations: boolean;
@@ -139,6 +140,7 @@ export interface EngineState {
   trades: ClosedTrade[];
   stats: PaperSessionStats;
   logs: SystemLog[];
+  halted: boolean;
 }
 
 export interface SystemLog {

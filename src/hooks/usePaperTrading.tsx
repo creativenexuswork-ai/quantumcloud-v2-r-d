@@ -1,29 +1,14 @@
 import React, { useEffect, useCallback, useRef, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { supabase, getAuthSession } from '@/integrations/supabase/client';
+import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from './useAuth';
 import { toast } from './use-toast';
 import { useSession, SessionStatus } from '@/lib/state/session';
-import { 
-  resetSessionState, 
-  handleSessionEnd as handleSessionEndRuntime,
-  type SessionEndReason 
-} from '@/lib/trading/resetSession';
+
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
-
-/**
- * Handle 401 responses from Edge Functions - logs and notifies user without touching engine logic.
- */
-function handle401Response(endpoint: string): never {
-  console.warn(`QuantumCloud auth expired – 401 from ${endpoint}`);
-  toast({
-    title: 'Session Expired',
-    description: 'Please log out and log back in to continue.',
-    variant: 'destructive',
-  });
-  throw new Error('AUTH_EXPIRED');
-}
+const TICK_INTERVAL_MS = 2000;
+const STATS_REFRESH_MS = 600; // P&L refresh every 600ms for faster updates
 
 export interface PaperStats {
   equity: number;
@@ -87,12 +72,12 @@ interface PaperConfig {
     selectedSymbols: string[];
     typeFilters: Record<string, boolean>;
   };
+  trading_halted_for_day: boolean;
   burst_requested: boolean;
   use_ai_reasoning: boolean;
   show_advanced_explanations: boolean;
   is_running?: boolean;
   session_status?: SessionStatus;
-  daily_loss_limit_pct?: number;
 }
 
 export function usePaperStats() {
@@ -101,18 +86,15 @@ export function usePaperStats() {
   return useQuery({
     queryKey: ['paper-stats'],
     queryFn: async () => {
-      const session = await getAuthSession();
+      const { data: { session: currentSession } } = await supabase.auth.getSession();
+      if (!currentSession?.access_token) throw new Error('Not authenticated');
 
       const response = await fetch(`${SUPABASE_URL}/functions/v1/paper-stats`, {
         headers: {
-          Authorization: `Bearer ${session.access_token}`,
+          Authorization: `Bearer ${currentSession.access_token}`,
           'Content-Type': 'application/json',
         },
       });
-
-      if (response.status === 401) {
-        handle401Response('paper-stats');
-      }
 
       if (!response.ok) {
         console.error('Paper stats fetch failed:', response.status, response.statusText);
@@ -143,14 +125,14 @@ export function usePaperStats() {
           created_at: string;
         }>;
         config: PaperConfig;
+        halted: boolean;
         sessionStatus: SessionStatus;
       }>;
     },
     enabled: !!session,
-    // UNIFIED TIMING: Polling disabled here - useSessionActions.tsx owns all timing
-    refetchInterval: false,
+    refetchInterval: STATS_REFRESH_MS, // Fast 1s P&L refresh
     retry: 2,
-    staleTime: Infinity,
+    staleTime: 500, // Consider data stale after 500ms for faster updates
   });
 }
 
@@ -163,7 +145,8 @@ export function usePaperTick() {
       globalClose?: boolean;
       takeBurstProfit?: boolean;
     }) => {
-      const session = await getAuthSession();
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.access_token) throw new Error('Not authenticated');
 
       const response = await fetch(`${SUPABASE_URL}/functions/v1/paper-tick`, {
         method: 'POST',
@@ -173,10 +156,6 @@ export function usePaperTick() {
         },
         body: JSON.stringify(options || {}),
       });
-
-      if (response.status === 401) {
-        handle401Response('paper-tick');
-      }
 
       if (!response.ok) throw new Error('Failed to run tick');
       return response.json();
@@ -192,6 +171,7 @@ export function useTradingSession() {
   const { status, setStatus } = useSession();
   const isRunning = status === 'running';
   const isHolding = status === 'holding';
+  const [halted, setHalted] = useState(false);
   const [tickInFlight, setTickInFlight] = useState(false);
   
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -208,28 +188,26 @@ export function useTradingSession() {
     tickInFlightRef.current = tickInFlight;
   }, [tickInFlight]);
 
-  const runTickInternal = useCallback(async (): Promise<{ sessionStatus: SessionStatus } | null> => {
+  const runTickInternal = useCallback(async (): Promise<{ halted: boolean; sessionStatus: SessionStatus } | null> => {
     if (tickInFlightRef.current) return null;
     
     tickInFlightRef.current = true;
     setTickInFlight(true);
     
     try {
-      const session = await getAuthSession();
+      const { data: { session: currentSession } } = await supabase.auth.getSession();
+      if (!currentSession?.access_token) {
+        return null;
+      }
 
       const response = await fetch(`${SUPABASE_URL}/functions/v1/paper-tick`, {
         method: 'POST',
         headers: {
-          Authorization: `Bearer ${session.access_token}`,
+          Authorization: `Bearer ${currentSession.access_token}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({}),
       });
-
-      if (response.status === 401) {
-        console.warn('QuantumCloud auth expired – 401 from paper-tick (tick loop)');
-        return null;
-      }
 
       if (!response.ok) {
         console.error('Tick failed:', response.status);
@@ -237,20 +215,18 @@ export function useTradingSession() {
       }
       
       const data = await response.json();
+      setHalted(data.halted || false);
       
-      // Sync status from backend
+      // Sync UI status with backend session_status
       if (data.sessionStatus && data.sessionStatus !== statusRef.current) {
         setStatus(data.sessionStatus);
       }
       
       queryClient.invalidateQueries({ queryKey: ['paper-stats'] });
 
-      return { sessionStatus: data.sessionStatus || 'running' };
+      return { halted: data.halted || false, sessionStatus: data.sessionStatus || 'idle' };
     } catch (error) {
-      // Don't log AUTH errors as they're handled above
-      if (error instanceof Error && !error.message.startsWith('AUTH_')) {
-        console.error('Tick error:', error);
-      }
+      console.error('Tick error:', error);
       return null;
     } finally {
       tickInFlightRef.current = false;
@@ -271,14 +247,22 @@ export function useTradingSession() {
       // Only tick if running or holding (holding still needs to manage positions)
       if (statusRef.current !== 'running' && statusRef.current !== 'holding') return;
       
-      await runTickInternal();
-      // Daily loss no longer halts engine - continues trading
-    }, 2000);
-  }, [runTickInternal, clearTickInterval]);
+      const tickResult = await runTickInternal();
+      if (tickResult?.halted) {
+        toast({
+          title: 'Trading Halted',
+          description: 'Daily loss limit reached.',
+          variant: 'destructive',
+        });
+        clearTickInterval();
+        setStatus('idle');
+      }
+    }, TICK_INTERVAL_MS);
+  }, [runTickInternal, clearTickInterval, setStatus]);
 
   // Start session - begin trading
   const startSession = useCallback(async () => {
-    if (status === 'running') return;
+    if (halted || status === 'running') return;
     
     try {
       const { data: { user } } = await supabase.auth.getUser();
@@ -301,8 +285,21 @@ export function useTradingSession() {
       setStatus('running');
       
       // Run immediate tick
-      await runTickInternal();
-      // Daily loss no longer halts engine - continues trading
+      const result = await runTickInternal();
+      
+      if (result?.halted) {
+        toast({
+          title: 'Trading Halted',
+          description: 'Daily loss limit reached.',
+          variant: 'destructive',
+        });
+        await supabase.from('paper_config').update({ 
+          is_running: false, 
+          session_status: 'idle' 
+        } as any).eq('user_id', user.id);
+        setStatus('idle');
+        return;
+      }
       
       startTickInterval();
       toast({ title: 'Session Started', description: 'Trading engine running' });
@@ -310,7 +307,7 @@ export function useTradingSession() {
       console.error('Start session error:', error);
       toast({ title: 'Error', description: 'Failed to start session', variant: 'destructive' });
     }
-  }, [status, runTickInternal, startTickInterval, setStatus]);
+  }, [halted, status, runTickInternal, startTickInterval, setStatus]);
 
   // Hold session - stop new trades but manage existing positions
   const holdSession = useCallback(async () => {
@@ -397,65 +394,20 @@ export function useTradingSession() {
     }
   }, [clearTickInterval, queryClient, setStatus]);
 
-  // Dispatch session end - resets runtime state and optionally restarts
-  // CRITICAL: autoRestart is the INVERSE of autoTpStopAfterHit
-  // - autoRestart = true  → continuous mode (keep running after TP)
-  // - autoRestart = false → stop after TP (go idle)
-  const dispatchSessionEnd = useCallback(async (reason: SessionEndReason, autoRestart: boolean = false) => {
-    console.log(`[dispatchSessionEnd] reason=${reason}, autoRestart=${autoRestart}`);
-    
-    // Reset runtime state first (in-memory state)
-    handleSessionEndRuntime(reason, status === 'running');
-    
-    // Then handle database-level reset
-    const { onSessionEnd } = await import('@/lib/trading/resetEngine');
-    
-    clearTickInterval();
-    
-    // CRITICAL: Map autoRestart to autoTpStopAfterHit correctly
-    // autoRestart = true  means stopAfterHit = false (continuous)
-    // autoRestart = false means stopAfterHit = true (stop after TP)
-    const stopAfterHit = !autoRestart;
-    
-    console.log(`[dispatchSessionEnd] Calling onSessionEnd with stopAfterHit=${stopAfterHit}`);
-    const result = await onSessionEnd(
-      reason as 'auto_tp' | 'max_dd' | 'risk_guard' | 'manual_stop',
-      stopAfterHit
-    );
-    
-    if (result.success) {
-      // Set UI status based on whether we're restarting
-      const newStatus = autoRestart ? 'running' : 'idle';
-      setStatus(newStatus);
-      queryClient.invalidateQueries({ queryKey: ['paper-stats'] });
-      
-      // Restart tick interval if auto-restarting (continuous mode)
-      if (autoRestart) {
-        console.log('[dispatchSessionEnd] Auto-restarting tick interval for continuous mode');
-        startTickInterval();
-      }
-    }
-    
-    return result;
-  }, [clearTickInterval, setStatus, queryClient, status, startTickInterval]);
-
   // Trigger burst mode
   const triggerBurst = useCallback(async () => {
     try {
-      const session = await getAuthSession();
+      const { data: { session: currentSession } } = await supabase.auth.getSession();
+      if (!currentSession?.access_token) return;
       
       const response = await fetch(`${SUPABASE_URL}/functions/v1/paper-tick`, {
         method: 'POST',
         headers: { 
-          Authorization: `Bearer ${session.access_token}`, 
+          Authorization: `Bearer ${currentSession.access_token}`, 
           'Content-Type': 'application/json' 
         },
         body: JSON.stringify({ burstRequested: true }),
       });
-      
-      if (response.status === 401) {
-        handle401Response('paper-tick');
-      }
       
       if (response.ok) {
         queryClient.invalidateQueries({ queryKey: ['paper-stats'] });
@@ -466,86 +418,46 @@ export function useTradingSession() {
     }
   }, [queryClient]);
 
-  // Take burst profit - closes positions and triggers SESSION_END
-  // Reads autoTpStopAfterHit from database config to determine behavior:
-  // - stopAfterHit = true  → close positions, reset, stay idle
-  // - stopAfterHit = false → close positions, reset, auto-restart (continuous)
+  // Take burst profit
   const takeBurstProfit = useCallback(async () => {
-    console.log('[takeBurstProfit] Starting burst profit take');
-    
     try {
-      const session = await getAuthSession();
+      const { data: { session: currentSession } } = await supabase.auth.getSession();
+      if (!currentSession?.access_token) return;
       
-      // Fetch the autoTpStopAfterHit setting from paper_config.burst_config
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) {
-        console.error('[takeBurstProfit] No user found');
-        return;
-      }
-      
-      const { data: config } = await supabase
-        .from('paper_config')
-        .select('burst_config')
-        .eq('user_id', user.id)
-        .single();
-      
-      // Read the stopAfterHit setting from burst_config
-      // Default to true (stop after TP) if setting not found
-      const burstConfig = config?.burst_config as { autoTpStopAfterHit?: boolean } | null;
-      const stopAfterHit = burstConfig?.autoTpStopAfterHit ?? true;
-      
-      console.log(`[takeBurstProfit] Config: stopAfterHit=${stopAfterHit} (continuous=${!stopAfterHit})`);
-      
-      // Call edge function to close burst positions
       const response = await fetch(`${SUPABASE_URL}/functions/v1/paper-tick`, {
         method: 'POST',
         headers: { 
-          Authorization: `Bearer ${session.access_token}`, 
+          Authorization: `Bearer ${currentSession.access_token}`, 
           'Content-Type': 'application/json' 
         },
         body: JSON.stringify({ takeBurstProfit: true }),
       });
       
-      if (response.status === 401) {
-        handle401Response('paper-tick');
+      if (response.ok) {
+        queryClient.invalidateQueries({ queryKey: ['paper-stats'] });
       }
       
-      if (response.ok) {
-        // Dispatch SESSION_END with the correct autoRestart flag
-        // autoRestart = true when stopAfterHit = false (continuous mode)
-        // autoRestart = false when stopAfterHit = true (stop after TP)
-        const autoRestart = !stopAfterHit;
-        console.log(`[takeBurstProfit] Dispatching session end: autoRestart=${autoRestart}`);
-        await dispatchSessionEnd('auto_tp', autoRestart);
-        
-        const message = stopAfterHit 
-          ? 'Burst profit taken - session stopped'
-          : 'Burst profit taken - restarting with fresh baseline';
-        toast({ title: 'Burst Profit Taken', description: message });
-      }
+      toast({ title: 'Burst Profit Taken' });
     } catch (error) {
       console.error('Take burst profit error:', error);
       toast({ title: 'Error', description: 'Failed to take burst profit', variant: 'destructive' });
     }
-  }, [dispatchSessionEnd]);
+  }, [queryClient]);
 
-  // Global close - close all positions and stop session using centralized reset
+  // Global close - close all positions and stop session
   const globalClose = useCallback(async () => {
     try {
-      const session = await getAuthSession();
+      const { data: { session: currentSession } } = await supabase.auth.getSession();
+      if (!currentSession?.access_token) return;
       
       const response = await fetch(`${SUPABASE_URL}/functions/v1/paper-tick`, {
         method: 'POST',
         headers: { 
-          Authorization: `Bearer ${session.access_token}`, 
+          Authorization: `Bearer ${currentSession.access_token}`, 
           'Content-Type': 'application/json' 
         },
         body: JSON.stringify({ globalClose: true }),
       });
-      
-      if (response.status === 401) {
-        handle401Response('paper-tick');
-      }
       
       if (response.ok) {
         // Stop the session after global close
@@ -570,33 +482,6 @@ export function useTradingSession() {
     }
   }, [queryClient, clearTickInterval, setStatus]);
 
-  // Handle session end events (Auto-TP, max-loss, etc.) using centralized reset
-  const handleSessionEnd = useCallback(async (reason: 'auto_tp' | 'max_dd' | 'risk_guard' | 'manual_stop', autoTpStopAfterHit: boolean = true) => {
-    const { onSessionEnd } = await import('@/lib/trading/resetEngine');
-    
-    clearTickInterval();
-    
-    const result = await onSessionEnd(reason, autoTpStopAfterHit);
-    
-    if (result.success) {
-      setStatus(result.reason === 'auto_tp' && !autoTpStopAfterHit ? 'running' : 'idle');
-      queryClient.invalidateQueries({ queryKey: ['paper-stats'] });
-      
-      const messages: Record<string, string> = {
-        auto_tp: autoTpStopAfterHit ? 'Auto Take Profit hit - session stopped' : 'Auto Take Profit hit - restarting with fresh baseline',
-        max_dd: 'Max daily drawdown hit - session stopped',
-        risk_guard: 'Risk guard triggered - session stopped',
-        manual_stop: 'Session stopped manually',
-      };
-      
-      toast({ 
-        title: 'Session Ended', 
-        description: messages[reason] || 'Session ended',
-        variant: reason === 'auto_tp' && !autoTpStopAfterHit ? 'default' : 'destructive'
-      });
-    }
-  }, [clearTickInterval, setStatus, queryClient]);
-
   // Initialize session state on mount
   useEffect(() => {
     let mounted = true;
@@ -607,24 +492,33 @@ export function useTradingSession() {
       try {
         const { data: config } = await supabase
           .from('paper_config')
-          .select('is_running, session_status')
+          .select('is_running, trading_halted_for_day, session_status')
           .eq('user_id', session.user.id)
           .maybeSingle();
 
         if (!mounted) return;
 
         if (config) {
+          setHalted(config.trading_halted_for_day || false);
+          
           // Restore session status from backend
           const backendStatus = (config as any).session_status as SessionStatus || 'idle';
           setStatus(backendStatus);
           
-          // Start tick if running or holding - no halt check needed
-          const shouldStartTick = backendStatus === 'running' || backendStatus === 'holding';
-          
-          if (shouldStartTick) {
-            await runTickInternal();
+          // Start tick interval if running or holding
+          if ((backendStatus === 'running' || backendStatus === 'holding') && !config.trading_halted_for_day) {
+            const result = await runTickInternal();
             
             if (!mounted) return;
+            
+            if (result?.halted) {
+              await supabase.from('paper_config').update({ 
+                is_running: false, 
+                session_status: 'idle' 
+              } as any).eq('user_id', session.user.id);
+              setStatus('idle');
+              return;
+            }
             
             startTickInterval();
           }
@@ -645,6 +539,7 @@ export function useTradingSession() {
   return {
     isActive: isRunning, 
     isHolding,
+    halted, 
     tickInFlight,
     startSession, 
     holdSession,
@@ -653,8 +548,6 @@ export function useTradingSession() {
     triggerBurst, 
     takeBurstProfit, 
     globalClose,
-    handleSessionEnd,
-    dispatchSessionEnd,
   };
 }
 

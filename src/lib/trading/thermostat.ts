@@ -36,13 +36,6 @@ const DEFAULT_CONFIG: ThermostatConfig = {
 // Store historical states for gradual adjustment
 let previousState: ThermostatState | null = null;
 
-/**
- * Reset thermostat state - used by engine reset
- */
-export function _resetThermostatState(): void {
-  previousState = null;
-}
-
 function getRecentTrades(trades: ClosedTrade[], windowMinutes: number): ClosedTrade[] {
   const cutoff = new Date(Date.now() - windowMinutes * 60 * 1000).toISOString();
   return trades.filter(t => t.closedAt && t.closedAt > cutoff);

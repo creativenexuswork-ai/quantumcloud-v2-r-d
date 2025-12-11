@@ -80,18 +80,18 @@ export function SettingsTab() {
         <CardContent className="space-y-6">
           <div className="space-y-2">
             <Label className="flex justify-between">
-              <span>Daily Loss Alert</span>
+              <span>Max Daily Loss</span>
               <span className="text-muted-foreground">{formData.maxDailyLoss}%</span>
             </Label>
             <Slider
               value={[formData.maxDailyLoss]}
               onValueChange={([v]) => setFormData(p => ({ ...p, maxDailyLoss: v }))}
               min={1}
-              max={30}
-              step={1}
+              max={10}
+              step={0.5}
             />
             <p className="text-xs text-muted-foreground">
-              Used for analytics and future alerts. Does NOT stop trading.
+              Trading stops when daily losses reach this threshold
             </p>
           </div>
 

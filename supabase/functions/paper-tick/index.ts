@@ -452,107 +452,6 @@ function selectAdaptiveSubMode(
   return 'scalper';
 }
 
-// ============== Directional Bias Filter v1.0 ==============
-
-interface DirectionalPerformance {
-  longWinRate: number;
-  shortWinRate: number;
-  longCount: number;
-  shortCount: number;
-  longPnl: number;
-  shortPnl: number;
-}
-
-interface BiasFilterResult {
-  allowed: boolean;
-  reason: string;
-  biasDirection: Side | 'neutral';
-}
-
-const CATASTROPHIC_WIN_RATE = 20;
-const MIN_TRADES_FOR_BIAS = 5;
-const REGIME_OVERRIDE_STRENGTH = 50;
-
-function calculateDirectionalPerformance(trades: any[]): DirectionalPerformance {
-  const longs = trades.filter(t => t.side === 'long');
-  const shorts = trades.filter(t => t.side === 'short');
-  
-  const longWins = longs.filter(t => Number(t.realized_pnl) > 0).length;
-  const shortWins = shorts.filter(t => Number(t.realized_pnl) > 0).length;
-  
-  const longPnl = longs.reduce((sum, t) => sum + Number(t.realized_pnl), 0);
-  const shortPnl = shorts.reduce((sum, t) => sum + Number(t.realized_pnl), 0);
-  
-  return {
-    longWinRate: longs.length > 0 ? (longWins / longs.length) * 100 : 50,
-    shortWinRate: shorts.length > 0 ? (shortWins / shorts.length) * 100 : 50,
-    longCount: longs.length,
-    shortCount: shorts.length,
-    longPnl,
-    shortPnl
-  };
-}
-
-function applyBiasFilter(
-  proposedDirection: Side,
-  regime: RegimeSnapshot | null,
-  recentTrades: any[]
-): BiasFilterResult {
-  // ============= OBSERVER MODE =============
-  // Bias filter is disabled - only computes stats for logging/diagnostics
-  // Does NOT block any trades
-  
-  const perf = calculateDirectionalPerformance(recentTrades);
-  
-  // Log observer mode stats for diagnostics
-  console.log(`[BIAS_FILTER_OBSERVER] ${proposedDirection.toUpperCase()} | LONG: ${perf.longWinRate.toFixed(0)}% (${perf.longCount} trades) | SHORT: ${perf.shortWinRate.toFixed(0)}% (${perf.shortCount} trades)`);
-  
-  // ALWAYS allow - observer mode only
-  return {
-    allowed: true,
-    reason: 'observer_mode',
-    biasDirection: 'neutral'
-  };
-  
-  // ============= ORIGINAL BLOCKING LOGIC (temporarily disabled) =============
-  // // Check for catastrophic SHORT performance
-  // if (proposedDirection === 'short' && 
-  //     perf.shortCount >= MIN_TRADES_FOR_BIAS && 
-  //     perf.shortWinRate < CATASTROPHIC_WIN_RATE) {
-  //   console.log(`[BIAS_FILTER] BLOCKED SHORT: win rate ${perf.shortWinRate.toFixed(0)}% catastrophic`);
-  //   return {
-  //     allowed: false,
-  //     reason: `SHORT blocked: ${perf.shortWinRate.toFixed(0)}% win rate`,
-  //     biasDirection: 'long'
-  //   };
-  // }
-  // 
-  // // Check for catastrophic LONG performance
-  // if (proposedDirection === 'long' && 
-  //     perf.longCount >= MIN_TRADES_FOR_BIAS && 
-  //     perf.longWinRate < CATASTROPHIC_WIN_RATE) {
-  //   console.log(`[BIAS_FILTER] BLOCKED LONG: win rate ${perf.longWinRate.toFixed(0)}% catastrophic`);
-  //   return {
-  //     allowed: false,
-  //     reason: `LONG blocked: ${perf.longWinRate.toFixed(0)}% win rate`,
-  //     biasDirection: 'short'
-  //   };
-  // }
-  // 
-  // // Check regime-based blocking (only if regime is strong)
-  // if (regime && regime.confidence > 0.6 && regime.trendStrength > REGIME_OVERRIDE_STRENGTH) {
-  //   if (proposedDirection === 'short' && regime.trendBias === 'bull') {
-  //     return { allowed: false, reason: `SHORT blocked: strong bullish regime`, biasDirection: 'long' };
-  //   }
-  //   if (proposedDirection === 'long' && regime.trendBias === 'bear') {
-  //     return { allowed: false, reason: `LONG blocked: strong bearish regime`, biasDirection: 'short' };
-  //   }
-  // }
-  // 
-  // return { allowed: true, reason: 'Direction allowed', biasDirection: 'neutral' };
-}
-
-
 // ============== Master Logic v1.5 - Unified Brain ==============
 
 interface MasterLogicContext {
@@ -778,26 +677,8 @@ function runMasterLogicV15(ctx: MasterLogicContext): {
     } else if (regime.trendBias === 'bear' && regime.confidence > 0.35) {
       direction = 'short';
     } else {
-      // Fallback - prefer long in neutral bias (based on recent performance)
-      const perf = calculateDirectionalPerformance(ctx.recentTrades);
-      direction = perf.longPnl >= perf.shortPnl ? 'long' : 'short';
-    }
-    
-    // CRITICAL: Apply directional bias filter
-    const biasResult = applyBiasFilter(direction, regime, ctx.recentTrades);
-    if (!biasResult.allowed) {
-      // If blocked, try opposite direction
-      const oppositeDir: Side = direction === 'long' ? 'short' : 'long';
-      const oppositeCheck = applyBiasFilter(oppositeDir, regime, ctx.recentTrades);
-      
-      if (oppositeCheck.allowed) {
-        direction = oppositeDir;
-        reasons.push(`direction_flipped: ${biasResult.reason}`);
-      } else {
-        // Both directions blocked - skip this symbol
-        console.log(`[BIAS_FILTER] ${symbol} skipped: both directions blocked`);
-        continue;
-      }
+      // Fallback - always have a direction to ensure trades fire
+      direction = Math.random() > 0.5 ? 'long' : 'short';
     }
     
     // Calculate confidence
@@ -1138,28 +1019,48 @@ serve(async (req) => {
     const wins = (todayTrades || []).filter((t: any) => Number(t.realized_pnl) > 0).length;
     const winRate = closedCount > 0 ? (wins / closedCount) * 100 : 50;
 
-    // Daily loss check removed - no halt enforcement
-    // Daily loss is now a metric only, exposed via paper-stats for UI display
+    // Check daily loss limit
+    const isHalted = currentPnlPercent <= -riskConfig.maxDailyLossPercent;
+    
+    if (isHalted && !config.trading_halted_for_day) {
+      await supabase.from('system_logs').insert({
+        user_id: userId, level: 'error', source: 'risk',
+        message: `RISK: Trading HALTED - Daily loss limit of ${riskConfig.maxDailyLossPercent}% reached`,
+        meta: { currentPnlPercent, limit: riskConfig.maxDailyLossPercent },
+      });
+
+      for (const pos of (positions || [])) {
+        const tick = ticks[pos.symbol];
+        const exitPrice = tick ? (pos.side === 'long' ? tick.bid : tick.ask) : Number(pos.entry_price);
+        const priceDiff = pos.side === 'long' ? exitPrice - Number(pos.entry_price) : Number(pos.entry_price) - exitPrice;
+        const pnl = priceDiff * Number(pos.size);
+
+        await supabase.from('paper_trades').insert({
+          user_id: userId, symbol: pos.symbol, mode: pos.mode, side: pos.side,
+          size: pos.size, entry_price: pos.entry_price, exit_price: exitPrice,
+          sl: pos.sl, tp: pos.tp, opened_at: pos.opened_at,
+          realized_pnl: pnl, reason: 'risk_halt', session_date: today, batch_id: pos.batch_id,
+        });
+        await supabase.from('paper_positions').delete().eq('id', pos.id);
+      }
+
+      await supabase.from('paper_config').update({ 
+        trading_halted_for_day: true, session_status: 'idle', is_running: false 
+      }).eq('user_id', userId);
+    }
 
     // Handle take burst profit
-    // NOTE: This only closes burst positions. Session end logic is handled by client after this returns.
-    // Client reads burst_config.autoTpStopAfterHit to determine continuous vs stop-after-TP behavior.
     if (takeBurstProfit) {
-      console.log('[PAPER_TICK] Processing takeBurstProfit request');
-      
       const { data: burstPositions } = await supabase.from('paper_positions').select('*').eq('user_id', userId).eq('mode', 'burst');
       const burstCount = (burstPositions || []).length;
       
       if (burstCount > 0) {
         const burstIds = (burstPositions || []).map(p => p.id);
-        let totalBurstPnl = 0;
-        
         const tradeRecords = (burstPositions || []).map(pos => {
           const tick = ticks[pos.symbol];
           const exitPrice = tick ? (pos.side === 'long' ? tick.bid : tick.ask) : Number(pos.entry_price);
           const priceDiff = pos.side === 'long' ? exitPrice - Number(pos.entry_price) : Number(pos.entry_price) - exitPrice;
           const pnl = priceDiff * Number(pos.size);
-          totalBurstPnl += pnl;
           return {
             user_id: userId, symbol: pos.symbol, mode: pos.mode, side: pos.side,
             size: pos.size, entry_price: pos.entry_price, exit_price: exitPrice,
@@ -1173,14 +1074,9 @@ serve(async (req) => {
           supabase.from('paper_positions').delete().in('id', burstIds),
           supabase.from('system_logs').insert({
             user_id: userId, level: 'info', source: 'burst',
-            message: `BURST TP: ${burstCount} positions closed. Total P&L: ${totalBurstPnl >= 0 ? '+' : ''}$${totalBurstPnl.toFixed(2)}`,
-            meta: { count: burstCount, pnl: totalBurstPnl },
+            message: `BURST: Take profit - ${burstCount} burst positions closed`,
           }),
         ]);
-        
-        console.log(`[PAPER_TICK] Burst TP complete: closed ${burstCount} positions, P&L: $${totalBurstPnl.toFixed(2)}`);
-      } else {
-        console.log('[PAPER_TICK] Burst TP: no burst positions to close');
       }
     }
 
@@ -1226,8 +1122,7 @@ serve(async (req) => {
     const freshSessionStatus: SessionStatus = freshConfig?.session_status || 'idle';
     const freshIsRunning = freshConfig?.is_running ?? false;
     
-    // No halt logic - engine runs whenever session is running
-    const shouldRunModes = freshSessionStatus === 'running' && freshIsRunning;
+    const shouldRunModes = freshSessionStatus === 'running' && freshIsRunning && !isHalted && !config.trading_halted_for_day;
     
     console.log(`[ENGINE] status=${freshSessionStatus}, running=${freshIsRunning}, shouldRunModes=${shouldRunModes}, positions=${(finalPositions || []).length}`);
     
@@ -1383,6 +1278,7 @@ serve(async (req) => {
     return new Response(JSON.stringify({ 
       success: true, 
       sessionStatus: freshSessionStatus,
+      halted: isHalted,
       stats: {
         todayPnl: finalTodayPnl,
         todayPnlPercent: finalTodayPnlPercent,

@@ -7,9 +7,8 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useTradingState } from './useSessionState';
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
-const TICK_INTERVAL_MS = 2000;   // 2s between ticks
-const PNL_REFRESH_MS = 300;      // 0.3s PnL refresh
-const AUTO_TP_CHECK_MS = 5000;   // 5s Auto-TP check
+const TICK_INTERVAL_MS = 2000; // Trading tick interval - strategy execution
+const PNL_REFRESH_MS = 300; // P&L refresh interval - fast UI updates
 
 // Map UI mode to backend mode
 const MODE_TO_BACKEND: Record<TradingMode, string> = {
@@ -138,6 +137,11 @@ export function useSessionActions() {
       
       const data = await response.json();
       
+      // Sync halted state
+      if (data.halted !== undefined) {
+        dispatch({ type: 'SET_HALTED', halted: data.halted });
+      }
+      
       // Sync session status from backend
       if (data.sessionStatus) {
         dispatch({ type: 'SYNC_STATUS', status: data.sessionStatus });
@@ -193,8 +197,19 @@ export function useSessionActions() {
         return;
       }
       
-      await runTick();
-      // Daily loss no longer halts engine - continues trading
+      const result = await runTick();
+      if (result?.halted) {
+        toast({
+          title: 'Trading Halted',
+          description: 'Daily loss limit reached.',
+          variant: 'destructive',
+        });
+        clearTickInterval();
+        clearPnlRefresh();
+        clearAutoTpCheck();
+        dispatch({ type: 'SET_HALTED', halted: true });
+        dispatch({ type: 'END_RUN', reason: 'manual_stop' });
+      }
     }, TICK_INTERVAL_MS);
   }, [runTick, clearTickInterval, clearPnlRefresh, clearAutoTpCheck, dispatch]);
 
@@ -324,13 +339,18 @@ export function useSessionActions() {
         
         queryClient.invalidateQueries({ queryKey: ['paper-stats'] });
       }
-    }, AUTO_TP_CHECK_MS);
+    }, TICK_INTERVAL_MS * 2);
   }, [runTick, queryClient, clearAutoTpCheck, dispatch]);
 
   // ACTIVATE - Start trading session OR Resume from holding
   // Creates a new run with Auto-TP parameters
   const activate = useCallback(async () => {
     const state = useSessionStore.getState();
+    
+    if (state.halted) {
+      toast({ title: 'Trading Halted', description: 'Daily loss limit reached', variant: 'destructive' });
+      return;
+    }
     
     // Can activate from idle, stopped, or holding
     if (state.status !== 'idle' && state.status !== 'stopped' && state.status !== 'holding') {
@@ -406,15 +426,26 @@ export function useSessionActions() {
 
       // Run immediate tick
       const result = await runTick();
-      // Daily loss no longer halts engine - continues trading
       
-      // Start intervals
+      if (result?.halted) {
+        toast({
+          title: 'Trading Halted',
+          description: 'Daily loss limit reached.',
+          variant: 'destructive',
+        });
+        await supabase.from('paper_config').update({
+          is_running: false,
+          session_status: 'idle',
+        } as any).eq('user_id', user.id);
+        dispatch({ type: 'SET_HALTED', halted: true });
+        dispatch({ type: 'END_RUN', reason: 'manual_stop' });
+        dispatch({ type: 'SET_PENDING_ACTION', pendingAction: null });
+        return;
+      }
+      
       startTickInterval();
       startPnlRefresh();
       startAutoTpCheck();
-      
-      // Sync PnL/UI immediately
-      await refreshPnl();
       
       toast({ 
         title: wasHolding ? 'Session Resumed' : 'Session Activated', 
@@ -688,7 +719,7 @@ export function useSessionActions() {
     });
   }, [dispatch]);
 
-  // Reset session to idle state
+  // Reset session (clear halted state, reset to idle)
   const resetSession = useCallback(async () => {
     clearTickInterval();
     clearPnlRefresh();
@@ -701,6 +732,7 @@ export function useSessionActions() {
       await supabase.from('paper_config').update({
         is_running: false,
         session_status: 'idle',
+        trading_halted_for_day: false,
         burst_requested: false,
       } as any).eq('user_id', user.id);
     }

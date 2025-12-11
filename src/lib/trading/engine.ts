@@ -18,7 +18,6 @@ import { markToMarket, checkExits, closePositions, calculateStats } from './pnl'
 import { classifyEnvironment, recordTick, type EnvironmentSummary } from './environment';
 import { calculateEdge, type EdgeSignal } from './edge';
 import { evaluateEntry, getModePersonality, type ModePersonality } from './entry';
-import { classifyRegime, type RegimeSnapshot } from './regime';
 import { calculatePositionSize, createRiskProfile } from './sizing';
 import { managePositions, identifyRotationCandidates } from './management';
 import { routeMarkets, shouldConsiderForEntry } from './router';
@@ -26,16 +25,6 @@ import { analyzeSession, isModeRecommendedForSession } from './session-brain';
 import { updateThermostat, shouldThermostatAllowTrading, getInitialThermostatState, type ThermostatState } from './thermostat';
 import { selectTradingMode, getModeForTrade, type UserModeSelection } from './adaptive';
 import { buildOrderRequest, executeOrder, type OrderParams, type ExecutionResult } from './execution';
-
-// Session state management
-import { 
-  resetSessionState, 
-  handleSessionEnd as handleSessionEndInternal,
-  isWarmStart,
-  consumeWarmStart,
-  resetWarmStartFlag,
-  type SessionEndReason 
-} from './resetSession';
 
 interface RunTickInput {
   userId: string;
@@ -70,23 +59,11 @@ export interface EngineV15Result {
 let thermostatState: ThermostatState = getInitialThermostatState();
 let lastAdaptiveMode: ModePersonality | null = null;
 
-/**
- * Reset engine memory - used by engine reset
- */
-export function _resetEngineMemory(): void {
-  thermostatState = getInitialThermostatState();
-  lastAdaptiveMode = null;
-}
+// Warm-start flag - first cycle MUST fire
+let warmStart = true;
 
-// Re-export resetWarmStart from resetSession for backward compatibility
-export { resetWarmStartFlag as resetWarmStart } from './resetSession';
-
-/**
- * Dispatch session end event through the reset pipeline
- * This is the main entry point for session termination
- */
-export function dispatchSessionEnd(reason: SessionEndReason, wasRunning: boolean = false) {
-  return handleSessionEndInternal(reason, wasRunning);
+export function resetWarmStart(): void {
+  warmStart = true;
 }
 
 /**
@@ -107,10 +84,8 @@ export async function runEngineV15(ctx: EngineV15Context): Promise<EngineV15Resu
   }
 
   // Warm-start booster: first run must produce a trade attempt
-  const forceFire = isWarmStart();
-  if (forceFire) {
-    consumeWarmStart();
-  }
+  const forceFire = warmStart === true;
+  warmStart = false;
 
   // Quality scoring
   const scored = validSymbols
@@ -299,7 +274,8 @@ export function runTradingTick(input: RunTickInput): EngineState {
       positions,
       trades: allTodayTrades,
       stats: calculateStats(positions, allTodayTrades, startingEquity),
-      logs
+      logs,
+      halted: false
     };
   }
   
@@ -358,10 +334,7 @@ export function runTradingTick(input: RunTickInput): EngineState {
       continue;
     }
     
-    // Get regime for bias filtering
-    const regime = classifyRegime(symbol, tick);
-    
-    // Evaluate entry with bias filter
+    // Evaluate entry
     const entryDecision = evaluateEntry(
       symbol,
       tick,
@@ -371,8 +344,7 @@ export function runTradingTick(input: RunTickInput): EngineState {
       thermostatState,
       positions,
       allTodayTrades,
-      config.riskConfig.maxOpenTrades || 10,
-      regime
+      config.riskConfig.maxOpenTrades || 10
     );
     
     if (!entryDecision.shouldEnter || !entryDecision.entryDirection) continue;
@@ -454,7 +426,8 @@ export function runTradingTick(input: RunTickInput): EngineState {
     positions: finalPositions,
     trades: allTodayTrades,
     stats: finalStats,
-    logs
+    logs,
+    halted: false
   };
 }
 
@@ -475,7 +448,8 @@ export function globalClose(
     positions: [],
     trades: allTrades,
     stats,
-    logs
+    logs,
+    halted: false
   };
 }
 
@@ -499,7 +473,8 @@ export function takeBurstProfit(
     positions: otherPositions,
     trades: allTrades,
     stats,
-    logs
+    logs,
+    halted: false
   };
 }
 
@@ -510,13 +485,3 @@ export { updateThermostat, type ThermostatState } from './thermostat';
 export { analyzeSession } from './session-brain';
 export { routeMarkets } from './router';
 export { buildOrderRequest, executeOrder } from './execution';
-export { classifyRegime, type RegimeSnapshot } from './regime';
-export { applyBiasFilter, calculateDirectionalPerformance, getBiasFilterSummary } from './bias-filter';
-export { resetEngine, onSessionEnd, type RunEndReason, type ResetEngineOptions, type ResetEngineResult } from './resetEngine';
-export { 
-  resetSessionState, 
-  handleSessionEnd as handleSessionEndRuntime,
-  getSessionRuntimeState,
-  type SessionEndReason,
-  type SessionRuntimeState 
-} from './resetSession';

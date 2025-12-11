@@ -52,7 +52,6 @@ serve(async (req) => {
           mode_config: { enabledModes: ['trend'], modeSettings: {} },
           market_config: { selectedSymbols: ['BTCUSDT', 'ETHUSDT'], typeFilters: { crypto: true, forex: true, index: true, metal: true } },
           is_running: false,
-          daily_loss_limit_pct: 5,
         })
         .select()
         .single();
@@ -103,109 +102,67 @@ serve(async (req) => {
       .order('created_at', { ascending: false })
       .limit(50);
 
-    // Get daily stats - THIS IS NOW THE SOURCE OF TRUTH FOR RESET STATE
+    // Get daily stats for starting equity
     const { data: dailyStats } = await supabase
       .from('paper_stats_daily')
-      .select('*')
+      .select('equity_start')
       .eq('user_id', userId)
       .eq('trade_date', today)
       .maybeSingle();
 
-    // ============================================
-    // RESET STATE DETECTION
-    // If paper_stats_daily shows pnl=0, trades_count=0, equity=10000,
-    // this indicates a manual reset - use those values directly
-    // instead of recalculating from paper_trades.
-    // ============================================
-    const dailyStatsIndicatesReset = dailyStats && 
-      dailyStats.pnl === 0 && 
-      dailyStats.trades_count === 0 && 
-      dailyStats.equity_start === 10000 && 
-      dailyStats.equity_end === 10000;
-    
-    const isResetState = dailyStatsIndicatesReset;
+    const startingEquity = dailyStats?.equity_start ?? account?.equity ?? 10000;
+    const realizedPnl = (todayTrades || []).reduce((sum: number, t: any) => sum + Number(t.realized_pnl), 0);
+    const unrealizedPnl = (positions || []).reduce((sum: number, p: any) => sum + Number(p.unrealized_pnl || 0), 0);
+    const todayPnl = realizedPnl + unrealizedPnl;
+    const todayPnlPercent = startingEquity > 0 ? (todayPnl / startingEquity) * 100 : 0;
 
-    let todayPnl: number;
-    let todayPnlPercent: number;
-    let closedCount: number;
-    let winRate: number;
-    let avgRR: number;
-    let startingEquity: number;
-    let equity: number;
+    const closedCount = (todayTrades || []).length;
+    const wins = (todayTrades || []).filter((t: any) => Number(t.realized_pnl) > 0).length;
+    const winRate = closedCount > 0 ? (wins / closedCount) * 100 : 0;
 
-    if (isResetState) {
-      // USE PAPER_STATS_DAILY VALUES DIRECTLY (post-reset state)
-      console.log('[paper-stats] Reset state detected - using paper_stats_daily values');
-      startingEquity = 10000;
-      todayPnl = 0;
-      todayPnlPercent = 0;
-      closedCount = 0;
-      winRate = 0;
-      avgRR = 0;
-      equity = 10000;
-    } else {
-      // NORMAL STATE - calculate from trades
-      startingEquity = dailyStats?.equity_start ?? account?.equity ?? 10000;
-      const realizedPnl = (todayTrades || []).reduce((sum: number, t: any) => sum + Number(t.realized_pnl), 0);
-      const unrealizedPnl = (positions || []).reduce((sum: number, p: any) => sum + Number(p.unrealized_pnl || 0), 0);
-      todayPnl = realizedPnl + unrealizedPnl;
-      todayPnlPercent = startingEquity > 0 ? (todayPnl / startingEquity) * 100 : 0;
-
-      closedCount = (todayTrades || []).length;
-      const wins = (todayTrades || []).filter((t: any) => Number(t.realized_pnl) > 0).length;
-      winRate = closedCount > 0 ? (wins / closedCount) * 100 : 0;
-
-      // Calculate avg R:R
-      const profitTrades = (todayTrades || []).filter((t: any) => Number(t.realized_pnl) > 0);
-      const lossTrades = (todayTrades || []).filter((t: any) => Number(t.realized_pnl) < 0);
-      const avgWin = profitTrades.length > 0 
-        ? profitTrades.reduce((s: number, t: any) => s + Number(t.realized_pnl), 0) / profitTrades.length 
-        : 0;
-      const avgLoss = lossTrades.length > 0 
-        ? Math.abs(lossTrades.reduce((s: number, t: any) => s + Number(t.realized_pnl), 0) / lossTrades.length) 
-        : 1;
-      avgRR = avgLoss > 0 ? avgWin / avgLoss : 0;
-
-      equity = startingEquity + todayPnl;
-    }
+    // Calculate avg R:R
+    const profitTrades = (todayTrades || []).filter((t: any) => Number(t.realized_pnl) > 0);
+    const lossTrades = (todayTrades || []).filter((t: any) => Number(t.realized_pnl) < 0);
+    const avgWin = profitTrades.length > 0 
+      ? profitTrades.reduce((s: number, t: any) => s + Number(t.realized_pnl), 0) / profitTrades.length 
+      : 0;
+    const avgLoss = lossTrades.length > 0 
+      ? Math.abs(lossTrades.reduce((s: number, t: any) => s + Number(t.realized_pnl), 0) / lossTrades.length) 
+      : 1;
+    const avgRR = avgLoss > 0 ? avgWin / avgLoss : 0;
 
     const burstTrades = (todayTrades || []).filter((t: any) => t.mode === 'burst');
-    const burstPnl = isResetState ? 0 : burstTrades.reduce((sum: number, t: any) => sum + Number(t.realized_pnl), 0);
+    const burstPnl = burstTrades.reduce((sum: number, t: any) => sum + Number(t.realized_pnl), 0);
     const burstPnlPercent = startingEquity > 0 ? (burstPnl / startingEquity) * 100 : 0;
 
     const burstPositions = (positions || []).filter((p: any) => p.mode === 'burst');
     const burstConfig = config?.burst_config || { dailyProfitTargetPercent: 8 };
+    const riskConfig = config?.risk_config || { maxDailyLossPercent: 5 };
     const burstStatus = burstPositions.length > 0 
       ? 'running' 
       : burstPnlPercent >= burstConfig.dailyProfitTargetPercent ? 'locked' : 'idle';
 
+    const isHalted = todayPnlPercent <= -riskConfig.maxDailyLossPercent || config?.trading_halted_for_day;
     const sessionStatus = config?.session_status || 'idle';
-    
-    // Daily loss limit as METRIC ONLY (no enforcement)
-    const dailyLossLimitPct = config?.daily_loss_limit_pct ?? 5;
-    const dailyLossPct = todayPnlPercent < 0 ? Math.abs(todayPnlPercent) : 0;
 
     const stats = {
-      equity,
+      equity: startingEquity + todayPnl,
       todayPnl,
       todayPnlPercent,
       winRate,
       avgRR,
       tradesToday: closedCount,
-      maxDrawdown: dailyStats?.max_drawdown ?? 0,
+      maxDrawdown: 0,
       openPositionsCount: (positions || []).length,
       burstPnlToday: burstPnlPercent,
-      burstsToday: isResetState ? 0 : new Set(burstTrades.map((t: any) => t.batch_id).filter(Boolean)).size,
+      burstsToday: new Set(burstTrades.map((t: any) => t.batch_id).filter(Boolean)).size,
       burstStatus,
-      // Daily loss metrics (informational only)
-      dailyLossPct,
-      dailyLossLimitPct,
     };
 
     return new Response(JSON.stringify({
       stats,
       positions,
-      trades: isResetState ? [] : todayTrades,
+      trades: todayTrades,
       historicalStats,
       symbols,
       logs,
@@ -214,13 +171,14 @@ serve(async (req) => {
         burst_config: config.burst_config,
         mode_config: config.mode_config,
         market_config: config.market_config,
+        trading_halted_for_day: config.trading_halted_for_day,
         burst_requested: config.burst_requested,
         use_ai_reasoning: config.use_ai_reasoning,
         show_advanced_explanations: config.show_advanced_explanations,
         is_running: config.is_running,
         session_status: config.session_status,
-        daily_loss_limit_pct: config.daily_loss_limit_pct,
       } : null,
+      halted: isHalted,
       sessionStatus,
     }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },

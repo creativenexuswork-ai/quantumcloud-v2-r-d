@@ -5,8 +5,16 @@ import { Play, Square, Loader2 } from 'lucide-react';
 import { useTradingSession, usePaperStats } from '@/hooks/usePaperTrading';
 import { useSession } from '@/lib/state/session';
 
+const regimeColors: Record<string, string> = {
+  trend: 'bg-success/20 text-success',
+  range: 'bg-warning/20 text-warning',
+  high_vol: 'bg-destructive/20 text-destructive',
+  low_vol: 'bg-muted text-muted-foreground',
+  news_risk: 'bg-primary/20 text-primary',
+};
+
 export function LiveStateCard() {
-  const { startSession, stopSession, tickInFlight } = useTradingSession();
+  const { startSession, stopSession, halted, tickInFlight } = useTradingSession();
   const { status } = useSession();
   const isRunning = status === 'running';
   const { data: paperData } = usePaperStats();
@@ -21,6 +29,9 @@ export function LiveStateCard() {
       <CardHeader className="pb-2">
         <div className="flex items-center justify-between">
           <CardTitle className="text-lg font-semibold">Live State & Mode</CardTitle>
+          {halted && (
+            <Badge variant="destructive">Trading Halted</Badge>
+          )}
         </div>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -61,9 +72,11 @@ export function LiveStateCard() {
           <div className="flex justify-between items-center">
             <span className="text-sm text-muted-foreground">Status</span>
             <span className={`text-sm font-medium ${
-              isRunning ? 'text-success animate-pulse' : 'text-muted-foreground'
+              isRunning ? 'text-success animate-pulse' :
+              halted ? 'text-destructive' :
+              'text-muted-foreground'
             }`}>
-              {isRunning ? 'RUNNING' : 'IDLE'}
+              {halted ? 'HALTED' : isRunning ? 'RUNNING' : 'IDLE'}
             </span>
           </div>
         </div>
@@ -77,7 +90,7 @@ export function LiveStateCard() {
         <div className="flex gap-2 pt-2">
           <Button 
             onClick={startSession}
-            disabled={isRunning || enabledModes.length === 0}
+            disabled={isRunning || halted || enabledModes.length === 0}
             className="flex-1 gap-2"
           >
             {tickInFlight ? (

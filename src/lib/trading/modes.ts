@@ -96,11 +96,6 @@ export function runBurstMode(ctx: EngineContext): ProposedOrder[] {
     const tick = ctx.ticks[symbol];
     if (!tick || tick.regime === 'low_vol') continue;
     
-    // HARD FILTER: Only crypto symbols allowed (prevents forex/stock corruption)
-    const normalizedSymbol = symbol.replace('/', '').toUpperCase();
-    const isCrypto = normalizedSymbol.endsWith('USD') && normalizedSymbol.length <= 10;
-    if (!isCrypto) continue;
-    
     const score = (tick.volatility ?? 0.5) * (tick.regime === 'trend' ? 1.5 : 1);
     if (score > bestScore) {
       bestScore = score;

@@ -10,9 +10,9 @@ import type {
 } from './types';
 
 /**
- * Check if daily loss limit is exceeded (informational metric only, does NOT halt trading)
+ * Check if trading should be halted for the day
  */
-export function isDailyLossLimitExceeded(
+export function shouldHaltForDay(
   stats: PaperSessionStats, 
   riskConfig: RiskConfig
 ): boolean {
@@ -40,7 +40,6 @@ export function calculateCurrentRisk(
 /**
  * Apply risk guardrails to proposed orders
  * Returns filtered orders and any logs
- * NOTE: Daily loss limit is informational only - does NOT block trades
  */
 export function applyRiskGuardrails(
   proposedOrders: ProposedOrder[],
@@ -52,15 +51,15 @@ export function applyRiskGuardrails(
   const logs: SystemLog[] = [];
   const now = new Date().toISOString();
   
-  // Daily loss limit metric (informational only - NO blocking)
-  if (isDailyLossLimitExceeded(stats, riskConfig)) {
+  // Check 1: Daily loss limit
+  if (shouldHaltForDay(stats, riskConfig)) {
     logs.push({
-      level: 'info',
+      level: 'warning',
       source: 'risk',
-      message: `RISK: Daily loss limit of ${riskConfig.maxDailyLossPercent}% exceeded (informational, engine NOT stopped)`,
+      message: `Trading halted: Daily loss limit of ${riskConfig.maxDailyLossPercent}% reached`,
       createdAt: now
     });
-    // NOTE: We continue processing - daily loss does NOT halt trading
+    return { orders: [], logs };
   }
   
   // Check 2: Max concurrent risk

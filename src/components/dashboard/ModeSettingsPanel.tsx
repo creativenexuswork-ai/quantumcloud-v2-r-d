@@ -5,7 +5,6 @@ import { Slider } from '@/components/ui/slider';
 import { Switch } from '@/components/ui/switch';
 import { useFullSessionState } from '@/hooks/useSessionState';
 import { useSessionStore, AutoTpMode } from '@/lib/state/sessionMachine';
-import { usePaperConfig } from '@/hooks/usePaperTrading';
 import { cn } from '@/lib/utils';
 
 export function ModeSettingsPanel() {
@@ -22,9 +21,6 @@ export function ModeSettingsPanel() {
   const autoTpValue = useSessionStore((s) => s.autoTpValue);
   const autoTpStopAfterHit = useSessionStore((s) => s.autoTpStopAfterHit);
   const dispatch = useSessionStore((s) => s.dispatch);
-  
-  // Get config updater to persist to database
-  const { updateConfig } = usePaperConfig();
 
   const showBurstScalperControls = selectedMode === 'burst' || selectedMode === 'scalper';
   const showTrendControls = selectedMode === 'trend';
@@ -38,17 +34,6 @@ export function ModeSettingsPanel() {
     } else if (mode === 'cash' && (autoTpValue === null || autoTpValue <= 0)) {
       dispatch({ type: 'SET_AUTO_TP_VALUE', value: 20 }); // Default $20
     }
-  };
-  
-  // Handle Stop After TP toggle - persists to burst_config in database
-  const handleStopAfterHitChange = (checked: boolean) => {
-    dispatch({ type: 'SET_AUTO_TP_STOP_AFTER_HIT', stopAfterHit: checked });
-    // Persist to database so takeBurstProfit can read it
-    updateConfig.mutate({
-      burst_config: {
-        autoTpStopAfterHit: checked,
-      },
-    });
   };
 
   return (
@@ -260,7 +245,7 @@ export function ModeSettingsPanel() {
             <Label className="text-[10px] text-muted-foreground uppercase">Stop After TP</Label>
             <Switch
               checked={autoTpStopAfterHit}
-              onCheckedChange={handleStopAfterHitChange}
+              onCheckedChange={(checked) => dispatch({ type: 'SET_AUTO_TP_STOP_AFTER_HIT', stopAfterHit: checked })}
             />
           </div>
         )}

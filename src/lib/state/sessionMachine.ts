@@ -22,6 +22,7 @@ export interface SessionState {
   winRate: number;
   equity: number;
   lastError: string | null;
+  halted: boolean;
   // pendingAction: set only during user-initiated transitions (not polling)
   pendingAction: PendingAction;
   
@@ -37,9 +38,6 @@ export interface SessionState {
   autoTpMode: AutoTpMode;         // 'off' | 'percent' | 'cash'
   autoTpValue: number | null;     // For percent: % value (e.g. 1 = 1%). For cash: currency amount
   autoTpStopAfterHit: boolean;    // true = stop after TP, false = infinite mode (auto restart)
-  
-  // ============== Daily Loss Alert (config only, no enforcement) ==============
-  dailyLossLimitPct: number;      // Alert threshold (default 5%)
 }
 
 export interface ButtonStates {
@@ -65,6 +63,7 @@ export function getInitialSessionState(): SessionState {
     winRate: 0,
     equity: 10000,
     lastError: null,
+    halted: false,
     pendingAction: null,
     // Run lifecycle - all reset
     runId: null,
@@ -76,13 +75,11 @@ export function getInitialSessionState(): SessionState {
     autoTpMode: 'percent',
     autoTpValue: 1, // Default 1% target
     autoTpStopAfterHit: false, // Infinite mode by default
-    // Daily loss alert (config only)
-    dailyLossLimitPct: 5,
   };
 }
 
 export function getButtonStates(session: SessionState): ButtonStates {
-  const { status, hasPositions, pendingAction, openCount } = session;
+  const { status, hasPositions, pendingAction, halted, openCount } = session;
   
   // CRITICAL: When ANY action is in progress, ALL control buttons are disabled
   // This prevents flashing/re-triggering during TP or CloseAll operations
@@ -91,8 +88,8 @@ export function getButtonStates(session: SessionState): ButtonStates {
   
   return {
     // ACTIVATE: when idle, stopped, OR holding (acts as Resume from holding)
-    // No halt check - engine can always be activated
-    canActivate: (status === 'idle' || status === 'stopped' || status === 'holding') && !isActionInProgress,
+    // Disabled if ANY action is pending, or halted
+    canActivate: (status === 'idle' || status === 'stopped' || status === 'holding') && !isActionInProgress && !halted,
     
     // HOLD: only when running, disabled if ANY action is pending
     canHold: status === 'running' && !isActionInProgress,
@@ -123,6 +120,7 @@ export type SessionAction =
   | { type: 'SET_MODE'; mode: TradingMode }
   | { type: 'SYNC_POSITIONS'; hasPositions: boolean; openCount: number }
   | { type: 'SYNC_PNL'; pnlToday: number; tradesToday: number; winRate: number; equity: number }
+  | { type: 'SET_HALTED'; halted: boolean }
   | { type: 'SET_PENDING_ACTION'; pendingAction: PendingAction }
   | { type: 'SYNC_STATUS'; status: SessionStatus }
   // Run lifecycle actions
@@ -132,9 +130,7 @@ export type SessionAction =
   // Auto-TP configuration actions
   | { type: 'SET_AUTO_TP_MODE'; mode: AutoTpMode }
   | { type: 'SET_AUTO_TP_VALUE'; value: number | null }
-  | { type: 'SET_AUTO_TP_STOP_AFTER_HIT'; stopAfterHit: boolean }
-  // Daily loss alert config
-  | { type: 'SET_DAILY_LOSS_LIMIT'; value: number };
+  | { type: 'SET_AUTO_TP_STOP_AFTER_HIT'; stopAfterHit: boolean };
 
 export function transitionSession(state: SessionState, action: SessionAction): SessionState {
   switch (action.type) {
@@ -204,6 +200,15 @@ export function transitionSession(state: SessionState, action: SessionAction): S
         equity: action.equity,
       };
     
+    case 'SET_HALTED':
+      return { 
+        ...state, 
+        halted: action.halted,
+        // If halted, also set to idle and clear pending action
+        status: action.halted ? 'idle' : state.status,
+        pendingAction: action.halted ? null : state.pendingAction,
+      };
+    
     case 'SET_PENDING_ACTION':
       return { ...state, pendingAction: action.pendingAction };
     
@@ -228,22 +233,14 @@ export function transitionSession(state: SessionState, action: SessionAction): S
       };
     
     case 'END_RUN':
-      // End current run - behavior depends on reason and autoTpStopAfterHit setting
-      // auto_tp with stopAfterHit=false → stay running (continuous mode)
-      // auto_tp with stopAfterHit=true → go idle
-      // manual_stop, close_all → always go idle
-      const shouldStayRunning = action.reason === 'auto_tp' && !state.autoTpStopAfterHit;
+      // End current run - no new trades allowed until next START_RUN
       return {
         ...state,
-        runActive: shouldStayRunning, // Keep active for continuous mode
+        runActive: false,
         // Clear run ID only on close_all (full reset)
         runId: action.reason === 'close_all' ? null : state.runId,
-        // Only go idle if NOT in continuous mode or if it's a manual action
-        status: shouldStayRunning ? 'running' : 'idle',
-        // Reset autoTpFired for next cycle in continuous mode
-        autoTpFired: shouldStayRunning ? false : state.autoTpFired,
-        // Update baseline for next TP target in continuous mode
-        autoTpBaselineEquity: shouldStayRunning ? state.equity : state.autoTpBaselineEquity,
+        // Set status to idle for manual_stop and close_all
+        status: action.reason === 'auto_tp' ? state.status : 'idle',
       };
     
     case 'SET_AUTO_TP_FIRED':
@@ -263,9 +260,6 @@ export function transitionSession(state: SessionState, action: SessionAction): S
     
     case 'SET_AUTO_TP_STOP_AFTER_HIT':
       return { ...state, autoTpStopAfterHit: action.stopAfterHit };
-    
-    case 'SET_DAILY_LOSS_LIMIT':
-      return { ...state, dailyLossLimitPct: action.value };
     
     default:
       return state;
